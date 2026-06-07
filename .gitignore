@@ -13,3 +13,5 @@ tmp_*.bin
 test_*
 *.tmp
 matmul_test.txt
+libnc-clean-release.tar.gz
+release_stage/

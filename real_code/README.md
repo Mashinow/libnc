@@ -15,10 +15,10 @@ This directory contains the maintained implementation split out of the repositor
 
 ## Current status
 
-- The shipped tests in `nctest.c` pass on the current build and print `all tests success`.
-- `matmul_test.c`, `ncspeed.c`, and `own_tests.c` also pass on the current build.
-- `nctest.c` is logically aligned with `etalon_nctest.c`; the differences are diagnostic logging and the explicit success marker.
-- `own_tests.c` now benchmarks actual CUDA tensor ops through `libnc_cuda.dll`; on the current machine, `matmul` shows a clear speedup while `add` remains mostly transfer-bound.
+- The shipped tests in `tests/nctest.c` pass on the current build and print `all tests success`.
+- `tests/matmul_test.c`, `tests/ncspeed.c`, and `tests/own_tests.c` also pass on the current build.
+- `tests/nctest.c` is logically aligned with `decompile/etalon_nctest.c`; the differences are diagnostic logging and the explicit success marker.
+- `tests/own_tests.c` now benchmarks actual CUDA tensor ops through `libnc_cuda.dll`; on the current machine, `matmul` shows a clear speedup while `add` remains mostly transfer-bound.
 - The runtime has an internal worker pool, but it is only enabled when a context is created with `nb_threads > 1`. The default benchmark path stays single-threaded unless a caller explicitly asks for parallelism.
 - BF16 parameters keep an internal F32 shadow copy during optimizer updates so the update path can preserve more precision than a raw BF16 in-place step.
 - The original binary exposes a job-based parallel layer with pthread primitives; this implementation follows the same spirit with an internal worker pool, but it is still CPU-only.
