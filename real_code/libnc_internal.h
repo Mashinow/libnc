@@ -52,6 +52,7 @@ struct NCDevice;
 struct NCTensorBuffer;
 struct NCNode;
 struct NCParallelState;
+typedef struct NCBackendOps NCBackendOps;
 
 typedef struct NCTensor {
     struct list_head link;
@@ -84,7 +85,25 @@ typedef struct NCDevice {
     struct NCContext *context;
     char *name;
     BOOL is_host;
+    const NCBackendOps *ops;
+    void *backend;
 } NCDevice;
+
+struct NCBackendOps {
+    NCTensor *(*binary_same_shape)(NCDevice *device, NCOp op, NCTensor *x1, NCTensor *x2);
+    NCTensor *(*unary)(NCDevice *device, NCOp op, NCTensor *x);
+    NCTensor *(*matmul)(NCDevice *device, NCTensor *w, NCTensor *x, NCTensor *y0, BOOL w_trans, BOOL x_trans);
+    NCTensor *(*convert)(NCDevice *device, NCTensor *x, NCTypeEnum new_type);
+    NCTensor *(*masked_fill)(NCDevice *device, NCTensor *x, NCTensor *mask, float c, BOOL mask_inv);
+    void (*tensor_set_rnd_unif)(NCDevice *device, NCTensor *y, float avg, float range, NCRNDState *rnd_state);
+    void (*tensor_set_dropout)(NCDevice *device, NCTensor *y, float prob, NCRNDState *rnd_state);
+    NCTensor *(*reduce_sum)(NCDevice *device, NCTensor *y0, NCTensor *x, int n_dims);
+    NCTensor *(*reduce_sum_sqr)(NCDevice *device, NCTensor *x);
+    NCTensor *(*soft_max)(NCDevice *device, NCTensor *x);
+    NCTensor *(*layer_norm)(NCDevice *device, NCTensor *x, float eps, BOOL rms);
+    void (*synchronize)(NCDevice *device);
+    void (*destroy)(NCDevice *device);
+};
 
 typedef struct NCContext {
     struct list_head devices;

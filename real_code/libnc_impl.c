@@ -635,6 +635,8 @@ NCContext *nc_context_init(int nb_threads)
     ctx->cpu_device->context = ctx;
     ctx->cpu_device->name = nc_strdup("cpu");
     ctx->cpu_device->is_host = TRUE;
+    ctx->cpu_device->ops = NULL;
+    ctx->cpu_device->backend = NULL;
     context_track_device(ctx, ctx->cpu_device);
     nc_fpu_init();
     ctx->parallel = nc_parallel_state_create(ctx->nb_threads);
@@ -680,6 +682,8 @@ void nc_context_end(NCContext *ctx)
         struct list_head *el = ctx->devices.next;
         NCDevice *d = list_entry(el, NCDevice, link);
         context_untrack_device(d);
+        if (d->ops && d->ops->destroy)
+            d->ops->destroy(d);
         nc_free(d->name);
         nc_free(d);
     }
@@ -688,7 +692,11 @@ void nc_context_end(NCContext *ctx)
 
 NCDevice *nc_new_cpu_device(NCContext *ctx)
 {
-    return ctx ? ctx->cpu_device : NULL;
+    if (!ctx)
+        return NULL;
+    ctx->cpu_device->ops = NULL;
+    ctx->cpu_device->backend = NULL;
+    return ctx->cpu_device;
 }
 
 NCDevice *nc_new_cuda_device(NCContext *ctx, int device_index)
@@ -719,7 +727,8 @@ NCDevice *nc_new_device(NCContext *ctx, const char *device_name)
 
 void nc_synchronize(NCDevice *d)
 {
-    (void)d;
+    if (d && d->ops && d->ops->synchronize)
+        d->ops->synchronize(d);
 }
 
 NCTensorBuffer *nc_new_tensor_buffer(NCDevice *d, size_t size)
@@ -1184,6 +1193,11 @@ static void reduce_sum_sqr_scalar_range_worker(void *opaque, size_t start, size_
 
 void nc_tensor_set_rnd_unif(NCTensor *y, float avg, float range, NCRNDState *rnd_state)
 {
+    if (y->device && y->device->ops && y->device->ops->tensor_set_rnd_unif &&
+        y->item_type == NC_TYPE_F32 && y->is_contiguous) {
+        y->device->ops->tensor_set_rnd_unif(y->device, y, avg, range, rnd_state);
+        return;
+    }
     size_t total = tensor_numel(y);
     uint8_t *base = tensor_data_ptr(y);
     if (rnd_state && rnd_state->tab && y->context && y->context->parallel &&
@@ -1210,6 +1224,11 @@ void nc_tensor_set_rnd_unif(NCTensor *y, float avg, float range, NCRNDState *rnd
 
 void nc_tensor_set_dropout(NCTensor *y, float prob, NCRNDState *rnd_state)
 {
+    if (y->device && y->device->ops && y->device->ops->tensor_set_dropout &&
+        y->item_type == NC_TYPE_F32 && y->is_contiguous) {
+        y->device->ops->tensor_set_dropout(y->device, y, prob, rnd_state);
+        return;
+    }
     size_t total = tensor_numel(y);
     uint8_t *base = tensor_data_ptr(y);
     float scale = prob < 1.0f ? 1.0f / (1.0f - prob) : 0.0f;
@@ -1377,6 +1396,17 @@ NCTensor *nc_convert(NCTensor *x, NCTypeEnum new_type)
 {
     if (x->item_type == new_type)
         return nc_dup_tensor(x);
+    if (x->device && x->device->ops && x->device->ops->convert && x->is_contiguous) {
+        NCTensor *y = x->device->ops->convert(x->device, x, new_type);
+        if (y) {
+            if (x->node) {
+                NCTensor *args[1] = { x };
+                tensor_add_node(y, NC_OP_CONVERT, 1, args);
+            }
+            nc_free_tensor(x);
+            return y;
+        }
+    }
     NCTensor *y = nc_new_tensor_nz(x->device, new_type, x->n_dims, x->dims);
     nc_tensor_convert(y, x);
     if (x->node) {
@@ -1409,8 +1439,21 @@ static NCTensor *tensor_binary_same_shape(NCTensor *a, NCTensor *b, float (*fn)(
             nc_error("same_dims(y, x1)");
         dims[i] = ad > bd ? ad : bd;
     }
+    size_t total = 1;
+    for (int i = 0; i < n_dims; i++)
+        total *= dims[i];
+    if (a->device == b->device && a->device && a->device->ops &&
+        a->device->ops->binary_same_shape &&
+        a->item_type == NC_TYPE_F32 && a->n_dims == b->n_dims &&
+        a->is_contiguous && b->is_contiguous && total >= 1) {
+        NCTensor *yb = a->device->ops->binary_same_shape(a->device, op, a, b);
+        if (yb) {
+            NCTensor *args[2] = { a, b };
+            tensor_add_node(yb, op, 2, args);
+            return yb;
+        }
+    }
     NCTensor *y = nc_new_tensor_nz(a->device, a->item_type, n_dims, dims);
-    size_t total = tensor_numel(y);
     if (a->context->parallel && a->context->parallel->n_threads > 1 &&
         a->n_dims == b->n_dims && a->is_contiguous && b->is_contiguous && total >= 8192) {
         NCPointwiseBinaryRangeCtx pctx = {
@@ -1500,6 +1543,15 @@ NCTensor *nc_max(NCTensor *x1, NCTensor *x2)
 
 NCTensor *nc_neg(NCTensor *x)
 {
+    if (x->device && x->device->ops && x->device->ops->unary &&
+        x->item_type == NC_TYPE_F32 && x->is_contiguous) {
+        NCTensor *y = x->device->ops->unary(x->device, NC_OP_NEG, x);
+        if (y) {
+            NCTensor *args[1] = { x };
+            tensor_add_node(y, NC_OP_NEG, 1, args);
+            return y;
+        }
+    }
     NCTensor *y = nc_new_tensor_nz(x->device, x->item_type, x->n_dims, x->dims);
     size_t total = tensor_numel(x);
     for (size_t i = 0; i < total; i++) {
@@ -1513,6 +1565,15 @@ NCTensor *nc_neg(NCTensor *x)
 
 NCTensor *nc_recip(NCTensor *x)
 {
+    if (x->device && x->device->ops && x->device->ops->unary &&
+        x->item_type == NC_TYPE_F32 && x->is_contiguous) {
+        NCTensor *y = x->device->ops->unary(x->device, NC_OP_RECIP, x);
+        if (y) {
+            NCTensor *args[1] = { x };
+            tensor_add_node(y, NC_OP_RECIP, 1, args);
+            return y;
+        }
+    }
     NCTensor *y = nc_new_tensor_nz(x->device, x->item_type, x->n_dims, x->dims);
     size_t total = tensor_numel(x);
     for (size_t i = 0; i < total; i++) {
@@ -1547,6 +1608,20 @@ NCTensor *nc_select(NCTensor *z, NCTensor *x1, NCTensor *x2)
 
 NCTensor *nc_masked_fill(NCTensor *x, NCTensor *mask, float c, BOOL mask_inv)
 {
+    if (x->device && x->device == mask->device && x->device->ops && x->device->ops->masked_fill &&
+        x->item_type == NC_TYPE_F32 && mask->item_type == NC_TYPE_F32 &&
+        x->is_contiguous && mask->is_contiguous) {
+        NCTensor *y = x->device->ops->masked_fill(x->device, x, mask, c, mask_inv);
+        if (y) {
+            NCTensor *args[2] = { x, mask };
+            tensor_add_node(y, NC_OP_MASKED_FILL, 2, args);
+            if (y->node) {
+                y->node->fvalue = c;
+                y->node->bvalue = mask_inv;
+            }
+            return y;
+        }
+    }
     NCTensor *y = nc_new_tensor_nz(x->device, x->item_type, x->n_dims, x->dims);
     size_t total = tensor_numel(x);
     if (x->is_contiguous && mask->is_contiguous && total >= 8192) {
@@ -1780,8 +1855,17 @@ static void reduce_sum_sqr_scalar_range_worker(void *opaque, size_t start, size_
 
 static NCTensor *tensor_unary_same_shape(NCTensor *x, float (*fn)(float, void *), NCOp op)
 {
+    size_t total = tensor_numel(x);
+    if (x->device && x->device->ops && x->device->ops->unary &&
+        x->item_type == NC_TYPE_F32 && x->is_contiguous) {
+        NCTensor *yb = x->device->ops->unary(x->device, op, x);
+        if (yb) {
+            NCTensor *args[1] = { x };
+            tensor_add_node(yb, op, 1, args);
+            return yb;
+        }
+    }
     NCTensor *y = nc_new_tensor_nz(x->device, x->item_type, x->n_dims, x->dims);
-    size_t total = tensor_numel(y);
     if (x->context->parallel && x->context->parallel->n_threads > 1 &&
         x->is_contiguous && total >= 8192) {
         NCPointwiseUnaryRangeCtx pctx = {
@@ -1920,6 +2004,15 @@ NCTensor *nc_reduce_sum(NCTensor *y0, NCTensor *x, int n_dims)
 {
     if (n_dims < 0 || n_dims > x->n_dims)
         nc_error("n_dims <= x->n_dims");
+    if (x->device && x->device->ops && x->device->ops->reduce_sum &&
+        x->item_type == NC_TYPE_F32 && x->is_contiguous && (!y0 || y0->device == x->device)) {
+        NCTensor *y = x->device->ops->reduce_sum(x->device, y0, x, n_dims);
+        if (y) {
+            NCTensor *args[1] = { x };
+            tensor_add_node(y, NC_OP_REDUCE_SUM, 1, args);
+            return y;
+        }
+    }
     if (!y0) {
         size_t dims[NC_N_DIMS_MAX] = {0};
         for (int i = 0; i < n_dims; i++)
@@ -2054,6 +2147,15 @@ NCTensor *nc_sum(NCTensor *x)
 
 NCTensor *nc_reduce_sum_sqr(NCTensor *x)
 {
+    if (x->device && x->device->ops && x->device->ops->reduce_sum_sqr &&
+        x->item_type == NC_TYPE_F32 && x->is_contiguous) {
+        NCTensor *y = x->device->ops->reduce_sum_sqr(x->device, x);
+        if (y) {
+            NCTensor *args[1] = { x };
+            tensor_add_node(y, NC_OP_REDUCE_SUM_SQR, 1, args);
+            return y;
+        }
+    }
     NCTensor *y = nc_new_scalar(x->device, x->item_type);
     size_t total = tensor_numel(x);
     if (x->context->parallel && x->context->parallel->n_threads > 1 &&
@@ -2413,6 +2515,27 @@ static NCTensor *matmul_2d_ex(NCTensor *w, NCTensor *x, BOOL w_trans, BOOL x_tra
         out_dims[1] = xn;
     }
 
+    if (w->device == x->device && w->device && w->device->ops && w->device->ops->matmul &&
+        w->item_type == NC_TYPE_F32 &&
+        (!y0 || y0->device == w->device)) {
+        NCTensor *yb = w->device->ops->matmul(w->device, w, x, y0, w_trans, x_trans);
+        if (yb) {
+            if (y0) {
+                NCTensor *args[3] = { w, x, y0 };
+                tensor_add_node(yb, NC_OP_MATMUL_ADD, 3, args);
+                if (yb->node) {
+                    yb->node->bvalue = w_trans;
+                    yb->node->value = x_trans ? 1.0f : 0.0f;
+                }
+            } else {
+                NCTensor *args[2] = { w, x };
+                tensor_add_node(yb, NC_OP_MATMUL, 2, args);
+                if (yb->node)
+                    yb->node->bvalue = use_colmajor ? 1.0f : 0.0f;
+            }
+            return yb;
+        }
+    }
     NCTensor *y = y0 ? nc_new_tensor_from_tensor(y0) : nc_new_tensor(w->device, w->item_type, 2, out_dims);
     if (y->n_dims != 2 || y->dims[0] != out_dims[0] || y->dims[1] != out_dims[1])
         nc_error("same_dims(y, x1)");
@@ -2595,6 +2718,15 @@ NCTensor *nc_soft_max(NCTensor *x)
 {
     if (x->n_dims == 0)
         return nc_dup_tensor(x);
+    if (x->device && x->device->ops && x->device->ops->soft_max &&
+        x->item_type == NC_TYPE_F32 && x->is_contiguous) {
+        NCTensor *y = x->device->ops->soft_max(x->device, x);
+        if (y) {
+            NCTensor *args[1] = { x };
+            tensor_add_node(y, NC_OP_SOFTMAX, 1, args);
+            return y;
+        }
+    }
     NCTensor *y = nc_new_tensor_nz(x->device, x->item_type, x->n_dims, x->dims);
     int axis = x->n_dims - 1;
     size_t outer = 1;
@@ -2664,12 +2796,56 @@ NCTensor *nc_indexed_log(NCTensor *x, NCTensor *eout)
     if (x->n_dims != 2 || eout->n_dims != 1)
         nc_error("indexed_log shapes");
     nc_error("indexed_log shapes");
+    return NULL;
 }
 
 static NCTensor *norm_last_dim(NCTensor *x, float eps, BOOL rms)
 {
     if (x->n_dims == 0)
         return nc_dup_tensor(x);
+    if (x->device && x->device->ops && x->device->ops->layer_norm &&
+        x->item_type == NC_TYPE_F32 && x->is_contiguous) {
+        NCTensor *y = x->device->ops->layer_norm(x->device, x, eps, rms);
+        if (y) {
+            size_t aux_ndims = x->n_dims > 0 ? (size_t)x->n_dims - 1 : 0;
+            NCTensor *aux = nc_new_tensor_nz(x->device, NC_TYPE_F32, (int)aux_ndims, x->dims);
+            int axis = x->n_dims - 1;
+            size_t outer = 1;
+            for (int i = 0; i < axis; i++)
+                outer *= x->dims[i];
+            size_t inner = x->dims[axis];
+            for (size_t o = 0; o < outer; o++) {
+                const uint8_t *xb = tensor_const_data_ptr(x) + o * inner * x->item_size;
+                double mean = 0.0;
+                double var = 0.0;
+                for (size_t i = 0; i < inner; i++) {
+                    double v = nc_load_f32(xb + i * x->item_size, x->item_type);
+                    mean += v;
+                    if (rms)
+                        var += v * v;
+                }
+                mean /= (double)inner;
+                if (!rms) {
+                    for (size_t i = 0; i < inner; i++) {
+                        double v = nc_load_f32(xb + i * x->item_size, x->item_type) - mean;
+                        var += v * v;
+                    }
+                    var /= (double)inner;
+                } else {
+                    var /= (double)inner;
+                }
+                double denom = sqrt(var + (double)eps);
+                nc_store_f32((uint8_t *)tensor_data_ptr(aux) + o * aux->item_size, aux->item_type, (float)(1.0 / denom));
+            }
+            NCTensor *args[2] = { x, aux };
+            tensor_add_node(y, rms ? NC_OP_RMS_NORM : NC_OP_LAYER_NORM, 2, args);
+            if (y->node) {
+                y->node->fvalue = eps;
+                y->node->bvalue = rms;
+            }
+            return y;
+        }
+    }
     NCTensor *y = nc_new_tensor_nz(x->device, x->item_type, x->n_dims, x->dims);
     size_t aux_ndims = x->n_dims > 0 ? (size_t)x->n_dims - 1 : 0;
     NCTensor *aux = nc_new_tensor_nz(x->device, NC_TYPE_F32, (int)aux_ndims, x->dims);

@@ -50,8 +50,8 @@ Note: these helpers do not need a duplicate implementation in `real_code/` becau
 - [x] `nc_context_end`
 - [x] `nc_new_cpu_device`
 - [x] `nc_new_device` for `cpu`
-- [~] `nc_new_cuda_device` - searches executable dir, `PATH`, CUDA env vars, and portable overrides (`LIBNC_CUDA_DLL`, `LIBNC_CUDA_DIR`, `LIBNC_CUDA_HOME`) for an external `libnc_cuda.dll`/`libnc_cuda.so`, then falls back to the compatibility device
-- [~] `nc_new_device` for `cuda[:index]` - routes through the CUDA loader hook, then falls back to the compatibility device path
+- [~] `nc_new_cuda_device` - searches executable dir, `PATH`, CUDA env vars, and portable overrides (`LIBNC_CUDA_DLL`, `LIBNC_CUDA_DIR`, `LIBNC_CUDA_HOME`) for the real `libnc_cuda.dll`/`libnc_cuda.so` backend built from `real_code/libnc_cuda_backend.c`, then falls back to the compatibility device
+- [~] `nc_new_device` for `cuda[:index]` - routes through the CUDA loader hook and the real CUDA backend DLL, then falls back to the compatibility device path
 - [x] `nc_cuda_backend_available`
 - [x] `nc_synchronize`
 - [x] `nc_new_tensor_buffer`
@@ -204,14 +204,26 @@ Note: these helpers do not need a duplicate implementation in `real_code/` becau
 - [x] `vec_sum_f32`
 - [x] `nc_topk`
 
+### CUDA backend
+- [x] `nc_new_cuda_device_internal` in `real_code/libnc_cuda_backend.c`
+- [x] `nc_cuda` tensor kernels for `add` / `sub` / `mul` / `div` / `min` / `max`
+- [x] `nc_cuda` tensor kernels for `neg` / `recip` / `sigmoid` / `tanh` / `relu` / `gelu` / `log`
+- [x] `nc_cuda` tensor kernels for `matmul`
+- [x] `nc_cuda` tensor kernels for `convert`
+- [x] `nc_cuda` tensor kernels for `reduce_sum` / `reduce_sum_sqr`
+- [x] `nc_cuda` tensor kernels for `soft_max`
+- [x] `nc_cuda` tensor kernels for `layer_norm` / `rms_norm`
+- [x] `nc_cuda` tensor kernels for `rnd_unif` / `rnd_dropout`
+- [x] `nc_cuda` tensor kernels for `masked_fill`
+
 ## Partial / intentionally simplified
 
 - [~] `nc_backward` - working and passes `nctest`, but still not a perfect 1:1 mirror of every original edge case.
 - [~] `nc_combine_nodes` - basic working graph merge logic, not the full original optimizer.
 - [~] `nc_concat_node` - correct for current tests, but still simplified wiring.
 - [~] `nc_concat_optimization` - simplified concat optimization pass.
-- [~] `nc_new_cuda_device` - external backend loader hook exists, but full GPU support is still optional and unverified on Windows.
-- [~] `nc_cuda` backend - separate GPU backend is not bundled here; only the loader hook and compatibility fallback are present.
+- [~] `nc_new_cuda_device` - CUDA support is optional, but the repo now includes a real backend DLL source and the loader still falls back cleanly when it is missing.
+- [~] `nc_cuda` backend - the GPU backend is now implemented in `real_code/libnc_cuda_backend.c`, but it remains optional and only covers the hot tensor ops that the current tests and benchmarks need.
 
 ## Verification
 
