@@ -13,6 +13,9 @@
 #endif
 
 #include "libnc_internal.h"
+#include "libnc_device_helpers.c"
+#include "libnc_graph_helpers.c"
+#include "libnc_param_io.c"
 
 const char *nc_type_name_table[NC_TYPE_COUNT] = {
     "f32",
@@ -109,10 +112,6 @@ void nc_fpu_init(void)
     _mm_setcsr(0x9FC0u);
 #endif
 }
-
-#include "libnc_device_helpers.c"
-#include "libnc_graph_helpers.c"
-#include "libnc_param_io.c"
 
 static inline size_t item_shift(NCTypeEnum type)
 {

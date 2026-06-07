@@ -145,6 +145,7 @@ static void context_untrack_device(NCDevice *d);
 static inline size_t tensor_numel(const NCTensor *t);
 static inline void *tensor_data_ptr(const NCTensor *t);
 static inline const void *tensor_const_data_ptr(const NCTensor *t);
+void nc_error(char *format, ...);
 void nc_node_set_parent(NCNode *n, int arg_index, const NCNode *n1);
 
 #endif /* LIBNC_INTERNAL_H */
