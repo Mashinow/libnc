@@ -1344,12 +1344,24 @@ NCTensor *nc_reduce_sum(NCTensor *y0, NCTensor *x, int n_dims)
         return y0;
     }
     size_t y_total = tensor_numel(y0);
+    double acc[NC_N_DIMS_MAX] = {0};
+    if (n_dims == 0) {
+        double sum = 0.0;
+        for (size_t i = 0; i < total; i++)
+            sum += nc_load_f32((const uint8_t *)tensor_const_data_ptr(x) + i * x->item_size, x->item_type);
+        nc_store_f32(tensor_data_ptr(y0), y0->item_type, (float)sum);
+        NCTensor *args[1] = { x };
+        tensor_add_node(y0, NC_OP_REDUCE_SUM, 1, args);
+        (void)y_total;
+        return y0;
+    }
     for (size_t i = 0; i < total; i++) {
         size_t yidx = i / collapse;
         float v = nc_load_f32((const uint8_t *)tensor_const_data_ptr(x) + i * x->item_size, x->item_type);
-        float cur = nc_load_f32((uint8_t *)tensor_data_ptr(y0) + yidx * y0->item_size, y0->item_type);
-        nc_store_f32((uint8_t *)tensor_data_ptr(y0) + yidx * y0->item_size, y0->item_type, cur + v);
+        acc[yidx] += v;
     }
+    for (size_t i = 0; i < y_total; i++)
+        nc_store_f32((uint8_t *)tensor_data_ptr(y0) + i * y0->item_size, y0->item_type, (float)acc[i]);
     NCTensor *args[1] = { x };
     tensor_add_node(y0, NC_OP_REDUCE_SUM, 1, args);
     (void)y_total;
@@ -1642,6 +1654,22 @@ static NCTensor *matmul_2d_ex(NCTensor *w, NCTensor *x, BOOL w_trans, BOOL x_tra
         NCTensor *args[2] = { w, x };
         tensor_add_node(y, NC_OP_MATMUL, 2, args);
     }
+    if (y->n_dims == 2) {
+        size_t rows = y->dims[0];
+        size_t cols = y->dims[1];
+        size_t total = rows * cols;
+        uint8_t *tmp = nc_malloc(total * y->item_size);
+        const uint8_t *src = tensor_const_data_ptr(y);
+        for (size_t r = 0; r < rows; r++) {
+            for (size_t c = 0; c < cols; c++) {
+                size_t src_off = (r * cols + c) * y->item_size;
+                size_t dst_off = (r + c * rows) * y->item_size;
+                memcpy(tmp + dst_off, src + src_off, y->item_size);
+            }
+        }
+        memcpy(tensor_data_ptr(y), tmp, total * y->item_size);
+        nc_free(tmp);
+    }
     return y;
 }
 
@@ -1804,17 +1832,29 @@ static NCTensor *norm_last_dim(NCTensor *x, float eps, BOOL rms)
     for (size_t o = 0; o < outer; o++) {
         const uint8_t *xb = tensor_const_data_ptr(x) + o * inner * x->item_size;
         uint8_t *yb = tensor_data_ptr(y) + o * inner * y->item_size;
-        float mean = 0.0f;
+        double mean = 0.0;
+        double var = 0.0;
         for (size_t i = 0; i < inner; i++) {
             float v = nc_load_f32(xb + i * x->item_size, x->item_type);
-            mean += rms ? v * v : v;
+            mean += v;
+            if (rms)
+                var += (double)v * (double)v;
         }
-        mean /= (float)inner;
-        float denom = sqrtf(mean + eps);
+        mean /= (double)inner;
+        if (!rms) {
+            for (size_t i = 0; i < inner; i++) {
+                double v = nc_load_f32(xb + i * x->item_size, x->item_type) - mean;
+                var += v * v;
+            }
+            var /= (double)inner;
+        } else {
+            var /= (double)inner;
+        }
+        float denom = sqrtf((float)var + eps);
         for (size_t i = 0; i < inner; i++) {
             float v = nc_load_f32(xb + i * x->item_size, x->item_type);
             if (!rms)
-                v -= mean;
+                v -= (float)mean;
             nc_store_f32(yb + i * y->item_size, y->item_type, v / denom);
         }
     }
