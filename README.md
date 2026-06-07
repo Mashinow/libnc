@@ -23,6 +23,25 @@ The goal of this project is to recreate the original `libnc` codebase using GPT-
 
 The focus is on producing readable, working, and fast code that behaves correctly on the shipped tests.
 
+## Implementation overview
+
+The current implementation is strong in the core areas that the shipped tests exercise:
+
+- tensor creation, copying, conversion, indexing, and layout helpers
+- element-wise math, reductions, reshapes, slicing, concatenation, and permutation
+- matrix multiplication, softmax, layer norm, RMS norm, and indexed tensor ops
+- BF16 handling for CPU paths and optimizer shadow copies
+- a working optional CUDA backend source with a portable loader path
+
+The parts that are still intentionally simplified or only partially matched to the original binary are:
+
+- full graph optimization and node wiring edge cases
+- `nc_backward` parity for every original special case
+- full serialized state/coef format compatibility in all corner cases
+- the exact original SGD/ADAM behavior and all low-level CUDA backend details
+
+For the current detailed status, see [IMPLEMENTATION_CHECKLIST.md](/F:/source/repos/libnc/IMPLEMENTATION_CHECKLIST.md).
+
 ## Build
 
 Build the main library from the repository root:
