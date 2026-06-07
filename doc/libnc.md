@@ -1,6 +1,9 @@
 # LibNC Documentation
 
-This document combines the original LibNC manual structure with the current state of this reconstruction.
+This document is split into two major parts:
+
+- a summary of the original LibNC manual written by Fabrice Bellard
+- a complete reference for the exported API declared in `libnc.h`
 
 Source notes:
 - original manual: `doc/libnc.html` from the 2021 release
@@ -173,6 +176,8 @@ Important enums and helper types:
 - `NCTopKEntry`: output record for `nc_topk`
 
 ## 6. API reference
+
+This section lists the exported symbols from `libnc.h` in a form that is meant to be useful both as a manual and as a reference while reading the implementation.
 
 ### 6.1 Profiling and low-level memory
 
@@ -433,4 +438,3 @@ nc_load_state(&pl, "model.state");
 - Some graph-optimization and optimizer corner cases are still simplified compared to the original binary.
 - The CUDA backend exists as source in `src/`, but it remains optional.
 - The doc and checklist should be updated together whenever the runtime behavior changes.
-
