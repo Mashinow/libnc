@@ -46,6 +46,22 @@ For the current detailed status, see [IMPLEMENTATION_CHECKLIST.md](https://githu
 
 ## Build
 
+The repository also ships a `Makefile` for reproducible builds and isolated test runs:
+
+```bash
+make clean all
+make test-nctest
+make test-matmul
+make test-ncspeed
+make test-own
+```
+
+If you want to run everything in one go, use:
+
+```bash
+make test
+```
+
 Build the main library from the repository root:
 
 ```bash
