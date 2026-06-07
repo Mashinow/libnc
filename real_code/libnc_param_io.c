@@ -79,6 +79,22 @@ static void param_io_load_tensor(FILE *f, NCParamList *pl)
     }
     if (fread(tensor_data_ptr(tmp), 1, tensor_numel(tmp) * tmp->item_size, f) != tensor_numel(tmp) * tmp->item_size)
         nc_error("unexpected end of file");
+
+    if (dst->item_type == NC_TYPE_BF16) {
+        if (!p->low_part || p->low_part->item_type != NC_TYPE_F32 ||
+            p->low_part->n_dims != dst->n_dims || memcmp(p->low_part->dims, dst->dims, sizeof(size_t) * (size_t)dst->n_dims) != 0) {
+            if (p->low_part) {
+                nc_free_tensor(p->low_part);
+                p->low_part = NULL;
+            }
+            p->low_part = nc_convert(nc_dup_tensor(dst), NC_TYPE_F32);
+        } else {
+            nc_tensor_convert(p->low_part, dst);
+        }
+    } else if (p->low_part) {
+        nc_free_tensor(p->low_part);
+        p->low_part = NULL;
+    }
 }
 
 static void param_io_save_all(NCParamList *pl, const char *filename)

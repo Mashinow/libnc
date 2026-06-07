@@ -3742,6 +3742,8 @@ NCParam *nc_new_param_str(NCParamList *pl, NCTensor **pval, const char *str)
     list_add_tail(&p->link, &pl->param_list);
     if (pl->add_graph)
         *pval = nc_set_param(*pval, p);
+    if (pval && *pval && (*pval)->item_type == NC_TYPE_BF16)
+        p->low_part = nc_convert(nc_dup_tensor(*pval), NC_TYPE_F32);
     return p;
 }
 
@@ -3761,6 +3763,14 @@ void nc_param_list_end(NCParamList *pl)
     list_for_each_safe(el, el1, &pl->param_list) {
         NCParam *p = list_entry(el, NCParam, link);
         list_del(&p->link);
+        if (p->low_part) {
+            nc_free_tensor(p->low_part);
+            p->low_part = NULL;
+        }
+        if (p->saved_grad) {
+            nc_free_tensor(p->saved_grad);
+            p->saved_grad = NULL;
+        }
         nc_free(p->name);
         nc_free(p);
     }
@@ -3826,12 +3836,18 @@ void sgd_opt_update_var(void *opaque, NCTensor *yg, NCTensor *get_col_index)
     if (!v || !v->param || !v->param->pval || !*v->param->pval || !yg)
         return;
     NCTensor *p = *v->param->pval;
-    size_t total = tensor_numel(p);
+    NCTensor *master = (p->item_type == NC_TYPE_BF16 && v->param->low_part) ? v->param->low_part : p;
+    size_t total = tensor_numel(master);
     for (size_t i = 0; i < total; i++) {
-        float pv = nc_load_f32((uint8_t *)tensor_const_data_ptr(p) + i * p->item_size, p->item_type);
+        float pv = nc_load_f32((uint8_t *)tensor_const_data_ptr(master) + i * master->item_size, master->item_type);
         float gv = nc_load_f32((const uint8_t *)tensor_const_data_ptr(yg) + i * yg->item_size, yg->item_type);
         pv -= v->owner->params.lr * gv;
-        nc_store_f32((uint8_t *)tensor_data_ptr(p) + i * p->item_size, p->item_type, pv);
+        nc_store_f32((uint8_t *)tensor_data_ptr(master) + i * master->item_size, master->item_type, pv);
+    }
+    if (master != p)
+        nc_tensor_convert(p, master);
+    if (p->item_type == NC_TYPE_BF16 && !v->param->low_part) {
+        v->param->low_part = nc_convert(nc_dup_tensor(p), NC_TYPE_F32);
     }
 }
 

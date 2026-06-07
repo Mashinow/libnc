@@ -17,6 +17,8 @@ This directory contains the maintained implementation split out of the repositor
 - `matmul_test.c`, `ncspeed.c`, and `own_tests.c` also pass on the current build.
 - `nctest.c` is logically aligned with `etalon_nctest.c`; the differences are diagnostic logging and the explicit success marker.
 - The runtime has an internal worker pool, but it is only enabled when a context is created with `nb_threads > 1`. The default benchmark path stays single-threaded unless a caller explicitly asks for parallelism.
+- BF16 parameters keep an internal F32 shadow copy during optimizer updates so the update path can preserve more precision than a raw BF16 in-place step.
+- The original binary exposes a job-based parallel layer with pthread primitives; this implementation follows the same spirit with an internal worker pool, but it is still CPU-only.
 
 ## Build
 

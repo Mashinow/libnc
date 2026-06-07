@@ -194,6 +194,7 @@ Note: these helpers do not need a duplicate implementation in `real_code/` becau
 - [x] `nc_sgd_opt_set_lr`
 - [x] `nc_sgd_opt_get_lr`
 - [x] `nc_sgd_opt_get_grad`
+- [~] `BF16 low_part shadow` - BF16 params keep an F32 shadow copy for optimizer updates, but this is still not a full original low-16-bit ADAM implementation.
 - [x] `rnd_init`
 - [x] `rnd_unif_u32`
 - [x] `rnd_unif`
@@ -209,6 +210,7 @@ Note: these helpers do not need a duplicate implementation in `real_code/` becau
 - [~] `nc_concat_node` - correct for current tests, but still simplified wiring.
 - [~] `nc_concat_optimization` - simplified concat optimization pass.
 - [~] `nc_new_cuda_device` - compatibility stub, not real GPU support.
+- [~] `nc_cuda` backend - still absent; the shipped `libnc_cuda.dll` integration is not implemented here.
 
 ## Verification
 
