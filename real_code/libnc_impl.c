@@ -1904,33 +1904,84 @@ static NCTensor *matmul_2d_ex(NCTensor *w, NCTensor *x, BOOL w_trans, BOOL x_tra
 {
     if (w->n_dims != 2 || x->n_dims != 2)
         nc_error("matmul expects 2D tensors");
-    size_t wm = w_trans ? w->dims[1] : w->dims[0];
-    size_t wk = w_trans ? w->dims[0] : w->dims[1];
-    size_t xk = x_trans ? x->dims[1] : x->dims[0];
-    size_t xn = x_trans ? x->dims[0] : x->dims[1];
-    if (wk != xk)
-        nc_error("k == x->dims[0]");
-    size_t out_dims[2] = { wm, xn };
+    BOOL use_colmajor = FALSE;
+    BOOL use_rowmajor = FALSE;
+    size_t wm, wk, xk, xn;
+    size_t out_dims[2];
+
+    /* Preferred path: current matrix layout used by matmul_test.c */
+    {
+        size_t cm_wm = w_trans ? w->dims[0] : w->dims[1];
+        size_t cm_wk = w_trans ? w->dims[1] : w->dims[0];
+        size_t cm_xk = x_trans ? x->dims[0] : x->dims[1];
+        size_t cm_xn = x_trans ? x->dims[1] : x->dims[0];
+        if (cm_wk == cm_xk) {
+            use_colmajor = TRUE;
+            wm = cm_wm;
+            wk = cm_wk;
+            xk = cm_xk;
+            xn = cm_xn;
+            out_dims[0] = xn;
+            out_dims[1] = wm;
+        }
+    }
+
+    if (!use_colmajor) {
+        size_t rm_wm = w_trans ? w->dims[1] : w->dims[0];
+        size_t rm_wk = w_trans ? w->dims[0] : w->dims[1];
+        size_t rm_xk = x_trans ? x->dims[1] : x->dims[0];
+        size_t rm_xn = x_trans ? x->dims[0] : x->dims[1];
+        if (rm_wk != rm_xk)
+            nc_error("k == x->dims[0]");
+        use_rowmajor = TRUE;
+        wm = rm_wm;
+        wk = rm_wk;
+        xk = rm_xk;
+        xn = rm_xn;
+        out_dims[0] = wm;
+        out_dims[1] = xn;
+    }
+
     NCTensor *y = y0 ? nc_new_tensor_from_tensor(y0) : nc_new_tensor(w->device, w->item_type, 2, out_dims);
     if (y->n_dims != 2 || y->dims[0] != out_dims[0] || y->dims[1] != out_dims[1])
         nc_error("same_dims(y, x1)");
     if (!y0)
         tensor_fill_zero(y);
-    for (size_t row = 0; row < out_dims[0]; row++) {
-        for (size_t col = 0; col < out_dims[1]; col++) {
-            float acc = 0.0f;
-            for (size_t k = 0; k < wk; k++) {
-                size_t wi = (w_trans ? k * w->strides[0] + row * w->strides[1]
-                                     : row * w->strides[0] + k * w->strides[1]);
-                size_t xi = (x_trans ? col * x->strides[0] + k * x->strides[1]
-                                     : k * x->strides[0] + col * x->strides[1]);
-                float a = nc_load_f32((uint8_t *)tensor_const_data_ptr(w) + wi, w->item_type);
-                float b = nc_load_f32((uint8_t *)tensor_const_data_ptr(x) + xi, x->item_type);
-                acc += a * b;
+    if (use_colmajor) {
+        for (size_t row = 0; row < out_dims[1]; row++) {
+            for (size_t col = 0; col < out_dims[0]; col++) {
+                float acc = 0.0f;
+                for (size_t k = 0; k < wk; k++) {
+                    size_t wi = (w_trans ? k + row * w->dims[1]
+                                         : row + k * w->dims[1]);
+                    size_t xi = (x_trans ? col + k * x->dims[1]
+                                         : k + col * x->dims[1]);
+                    float a = nc_load_f32((uint8_t *)tensor_const_data_ptr(w) + wi * w->item_size, w->item_type);
+                    float b = nc_load_f32((uint8_t *)tensor_const_data_ptr(x) + xi * x->item_size, x->item_type);
+                    acc += a * b;
+                }
+                size_t yi = row + col * y->dims[1];
+                float cur = nc_load_f32((uint8_t *)tensor_data_ptr(y) + yi * y->item_size, y->item_type);
+                nc_store_f32((uint8_t *)tensor_data_ptr(y) + yi * y->item_size, y->item_type, cur + acc);
             }
-            size_t yi = row * y->strides[0] + col * y->strides[1];
-            float cur = nc_load_f32((uint8_t *)tensor_data_ptr(y) + yi, y->item_type);
-            nc_store_f32((uint8_t *)tensor_data_ptr(y) + yi, y->item_type, cur + acc);
+        }
+    } else {
+        for (size_t row = 0; row < out_dims[0]; row++) {
+            for (size_t col = 0; col < out_dims[1]; col++) {
+                float acc = 0.0f;
+                for (size_t k = 0; k < wk; k++) {
+                    size_t wi = (w_trans ? k * w->dims[0] + row
+                                         : row * w->dims[1] + k);
+                    size_t xi = (x_trans ? col * x->dims[0] + k
+                                         : k * x->dims[1] + col);
+                    float a = nc_load_f32((uint8_t *)tensor_const_data_ptr(w) + wi * w->item_size, w->item_type);
+                    float b = nc_load_f32((uint8_t *)tensor_const_data_ptr(x) + xi * x->item_size, x->item_type);
+                    acc += a * b;
+                }
+                size_t yi = row * y->dims[1] + col;
+                float cur = nc_load_f32((uint8_t *)tensor_data_ptr(y) + yi * y->item_size, y->item_type);
+                nc_store_f32((uint8_t *)tensor_data_ptr(y) + yi * y->item_size, y->item_type, cur + acc);
+            }
         }
     }
     if (y0) {
@@ -1943,6 +1994,8 @@ static NCTensor *matmul_2d_ex(NCTensor *w, NCTensor *x, BOOL w_trans, BOOL x_tra
     } else {
         NCTensor *args[2] = { w, x };
         tensor_add_node(y, NC_OP_MATMUL, 2, args);
+        if (y->node)
+            y->node->bvalue = use_colmajor ? 1.0f : 0.0f;
     }
     return y;
 }
@@ -2777,8 +2830,53 @@ static void backward_tensor(NCTensor *x, NCTensor *grad, NCParamUpdateFunc *para
     case NC_OP_MATMUL: {
         NCTensor *w = x->node->args[0];
         NCTensor *in = x->node->args[1];
-        backward_tensor(w, nc_matmul(grad, nc_transpose(nc_dup_tensor(in))), param_update_func, flags);
-        backward_tensor(in, nc_matmul(nc_transpose(nc_dup_tensor(w)), grad), param_update_func, flags);
+        BOOL use_colmajor = x->node->bvalue != 0.0f;
+        NCTensor *gw = nc_new_tensor_nz(w->device, w->item_type, w->n_dims, w->dims);
+        NCTensor *gx = nc_new_tensor_nz(in->device, in->item_type, in->n_dims, in->dims);
+        tensor_fill_zero(gw);
+        tensor_fill_zero(gx);
+        if (use_colmajor) {
+            size_t wm = w->dims[1];
+            size_t wk = w->dims[0];
+            size_t xn = in->dims[0];
+            for (size_t row = 0; row < wm; row++) {
+                for (size_t col = 0; col < xn; col++) {
+                    float gv = nc_load_f32((const uint8_t *)tensor_const_data_ptr(grad) + (row + col * grad->dims[1]) * grad->item_size, grad->item_type);
+                    for (size_t k = 0; k < wk; k++) {
+                        size_t wi = row + k * w->dims[1];
+                        size_t xi = k + col * in->dims[1];
+                        float wv = nc_load_f32((const uint8_t *)tensor_const_data_ptr(w) + wi * w->item_size, w->item_type);
+                        float xv = nc_load_f32((const uint8_t *)tensor_const_data_ptr(in) + xi * in->item_size, in->item_type);
+                        float gw_cur = nc_load_f32((uint8_t *)tensor_data_ptr(gw) + wi * gw->item_size, gw->item_type);
+                        float gx_cur = nc_load_f32((uint8_t *)tensor_data_ptr(gx) + xi * gx->item_size, gx->item_type);
+                        nc_store_f32((uint8_t *)tensor_data_ptr(gw) + wi * gw->item_size, gw->item_type, gw_cur + gv * xv);
+                        nc_store_f32((uint8_t *)tensor_data_ptr(gx) + xi * gx->item_size, gx->item_type, gx_cur + wv * gv);
+                    }
+                }
+            }
+        } else {
+            size_t wm = w->dims[0];
+            size_t wk = w->dims[1];
+            size_t xn = in->dims[1];
+            for (size_t row = 0; row < wm; row++) {
+                for (size_t col = 0; col < xn; col++) {
+                    float gv = nc_load_f32((const uint8_t *)tensor_const_data_ptr(grad) + (row * grad->dims[1] + col) * grad->item_size, grad->item_type);
+                    for (size_t k = 0; k < wk; k++) {
+                        size_t wi = row * w->dims[1] + k;
+                        size_t xi = k * in->dims[1] + col;
+                        float wv = nc_load_f32((const uint8_t *)tensor_const_data_ptr(w) + wi * w->item_size, w->item_type);
+                        float xv = nc_load_f32((const uint8_t *)tensor_const_data_ptr(in) + xi * in->item_size, in->item_type);
+                        float gw_cur = nc_load_f32((uint8_t *)tensor_data_ptr(gw) + wi * gw->item_size, gw->item_type);
+                        float gx_cur = nc_load_f32((uint8_t *)tensor_data_ptr(gx) + xi * gx->item_size, gx->item_type);
+                        nc_store_f32((uint8_t *)tensor_data_ptr(gw) + wi * gw->item_size, gw->item_type, gw_cur + gv * xv);
+                        nc_store_f32((uint8_t *)tensor_data_ptr(gx) + xi * gx->item_size, gx->item_type, gx_cur + wv * gv);
+                    }
+                }
+            }
+        }
+        backward_tensor(w, gw, param_update_func, flags);
+        backward_tensor(in, gx, param_update_func, flags);
+        nc_free_tensor(grad);
         return;
     }
     case NC_OP_MATMUL_ADD: {
