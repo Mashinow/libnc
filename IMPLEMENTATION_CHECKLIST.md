@@ -141,8 +141,8 @@
 - [x] `nc_split`
 - [x] `nc_vsplit`
 - [x] `nc_hsplit`
-- [x] `nc_pad`
-- [x] `nc_resize`
+- [~] `nc_pad`
+- [~] `nc_resize`
 - [x] `nc_make_contiguous`
 - [x] `nc_permute_alias`
 - [x] `nc_permute`
@@ -168,8 +168,8 @@
 - [x] `nc_stop_grad`
 - [x] `nc_dup_node`
 - [x] `nc_free_node`
-- [x] `nc_node_set_parent`
-- [x] `nc_node_set_arg`
+- [~] `nc_node_set_parent`
+- [~] `nc_node_set_arg`
 - [x] `nc_dump_graph`
 - [x] `nc_param_list_init`
 - [x] `nc_param_list_set_graph`
@@ -178,17 +178,17 @@
 - [x] `nc_param_list_end`
 - [x] `nc_find_param`
 - [x] `nc_get_param_count`
-- [x] `nc_save_coefs`
-- [x] `nc_load_coefs`
-- [x] `nc_save_state`
-- [x] `nc_load_state`
+- [~] `nc_save_coefs`
+- [~] `nc_load_coefs`
+- [~] `nc_save_state`
+- [~] `nc_load_state`
 
 ### Optimizer / misc
-- [x] `nc_sgd_opt_init`
-- [x] `nc_sgd_opt_end`
-- [x] `nc_sgd_opt_set_all`
-- [x] `nc_sgd_opt_set`
-- [x] `nc_sgd_opt_update`
+- [~] `nc_sgd_opt_init`
+- [~] `nc_sgd_opt_end`
+- [~] `nc_sgd_opt_set_all`
+- [~] `nc_sgd_opt_set`
+- [~] `nc_sgd_opt_update`
 - [x] `nc_sgd_opt_set_lr`
 - [x] `nc_sgd_opt_get_lr`
 - [x] `nc_sgd_opt_get_grad`
@@ -204,14 +204,15 @@
 
 - [~] `nc_new_cuda_device` - логически исправлена: создает compat-устройство `cuda:<index>` вместо буквального `return NULL` из сломанного псевдокода.
 - [~] `nc_new_device` - поддерживает `cpu` и `cuda[:index]`; ветка `cuda` направляется в compat-реализацию.
-- [~] `nc_combine_nodes` - текущая логика еще не перенесена из псевдокода полностью.
-- [~] `nc_concat_node` - текущая логика еще не перенесена из псевдокода полностью.
-- [~] `nc_concat_optimization` - текущая логика еще не перенесена из псевдокода полностью.
-- [~] `nc_node_set_parent` - адаптировано под текущую структуру, но еще не зеркалит псевдокод byte-for-byte.
-- [~] `nc_node_set_arg` - адаптировано под текущую структуру, но еще не зеркалит псевдокод byte-for-byte.
-- [~] `nc_backward` - уже не заглушка, но не весь оригинальный набор покрыт.
+- [~] `nc_combine_nodes` - реализована базовая логика, но не весь графовый оптимизатор из `pseudo_code`.
+- [~] `nc_concat_node` - реализовано создание узла и базовое хранение метаданных, но не полный оригинальный wiring.
+- [~] `nc_concat_optimization` - реализована упрощенная оптимизация concat-графа.
+- [~] `nc_node_set_parent` - теперь ближе к псевдокоду по проверкам и refcount, но структура у нас упрощенная.
+- [~] `nc_node_set_arg` - теперь ближе к псевдокоду по проверкам и refcount, но структура у нас упрощенная.
+- [~] `nc_backward` - покрытие расширено, но еще есть ops без полного backward-пути.
+- [~] `nc_pad` / `nc_resize` - базовый граф и backward есть, но режимы `PAD_DUP` / `TRIM_SUM` еще не закрыты.
 - [~] `nc_save_coefs` / `nc_load_coefs` / `nc_save_state` / `nc_load_state` - формат уже ближе к псевдокоду, но еще без полного покрытия всех крайних случаев оригинала.
-- [~] `nc_sgd_opt_init` / `nc_sgd_opt_set` / `nc_sgd_opt_update` - рабочий SGD-каркас, но без полного набора алгоритмов оригинала.
+- [~] `nc_sgd_opt_init` / `nc_sgd_opt_set` / `nc_sgd_opt_update` - рабочий SGD-каркас с корректным attach/detach, но без полного набора алгоритмов оригинала.
 
 ## Примечание
 
