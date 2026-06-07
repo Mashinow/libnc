@@ -36,7 +36,7 @@ RUN_OWN := ./own_tests
 ALL_TARGETS := $(SHLIB) $(TEST_BINS)
 endif
 
-.PHONY: all libnc cuda tests test clean check
+.PHONY: all libnc cuda tests test test-nctest test-matmul test-ncspeed test-own clean check
 
 all: $(ALL_TARGETS)
 
@@ -51,10 +51,18 @@ endif
 
 tests: $(TEST_BINS)
 
-test: all
+test: test-nctest test-matmul test-ncspeed test-own
+
+test-nctest: all
 	$(RUN_ENV) $(RUN_NCTEST)
+
+test-matmul: all
 	$(RUN_ENV) $(RUN_MATMUL)
+
+test-ncspeed: all
 	$(RUN_ENV) $(RUN_NSPEED)
+
+test-own: all
 	$(RUN_ENV) $(RUN_OWN)
 
 check: test
