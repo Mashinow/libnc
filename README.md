@@ -1,6 +1,6 @@
 # libnc reconstruction
 
-This repository contains a clean-room style reconstruction of `libnc` made from the public header file and decompiled pseudocode. The implementation itself lives in `real_code/`, the shipped tests are in `tests/`, and reverse-engineering references are kept under `decompile/`.
+This repository contains a clean-room style reconstruction of `libnc` made from the public header file and decompiled pseudocode. The implementation itself lives in `src/`, the shipped tests are in `tests/`, and reverse-engineering references are kept under `decompile/`.
 
 The original `libnc` project was created by Fabrice Bellard. This repository is only a reconstruction effort based on public headers and decompiled material, and all rights to the original project remain with Fabrice Bellard.
 
@@ -9,7 +9,7 @@ The original `libnc` project was created by Fabrice Bellard. This repository is 
 - `libnc.c` - single translation unit entry point for the main library build.
 - `libnc.h` - public API.
 - `cutils.h`, `list.h` - supporting utility headers used by the public API.
-- `real_code/` - maintained implementation split into logical source files.
+- `src/` - maintained implementation split into logical source files.
 - `tests/` - test programs that validate the rebuilt library.
 - `decompile/` - reference material from binaries, pseudocode, and structural notes.
 
@@ -34,7 +34,7 @@ gcc -std=gnu11 -O2 -I. -shared -o libnc.dll libnc.c -Wl,--out-implib,libnc.dll.a
 Build the CUDA backend DLL if you want GPU acceleration:
 
 ```bash
-gcc -std=gnu11 -O2 -I. -shared -o libnc_cuda.dll real_code/libnc_cuda_backend.c -L. -lnc -Wl,--out-implib,libnc_cuda.dll.a
+gcc -std=gnu11 -O2 -I. -shared -o libnc_cuda.dll src/libnc_cuda_backend.c -L. -lnc -Wl,--out-implib,libnc_cuda.dll.a
 ```
 
 Build the tests from the repository root:
@@ -52,9 +52,10 @@ gcc -std=gnu11 -O2 -I. tests/own_tests.c libnc.c -o own_tests.exe
 - `tests/matmul_test.c` should print `all tests success`
 - `tests/ncspeed.c` should print `all tests success`
 - `tests/own_tests.c` should print `all tests success`
+- The repository has been validated on Windows 10 so far; Linux/WSL support is being checked separately.
 
 ## Notes
 
 - Keep `#include` directives at the top of source files.
 - Keep `decompile/` out of release archives.
-- If you change runtime behavior, update `real_code/README.md` and `IMPLEMENTATION_CHECKLIST.md` together with the code.
+- If you change runtime behavior, update `src/README.md` and `IMPLEMENTATION_CHECKLIST.md` together with the code.

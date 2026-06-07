@@ -1,4 +1,4 @@
-# real_code layout
+# src layout
 
 This directory contains the maintained implementation split out of the repository root.
 
@@ -31,7 +31,7 @@ Build from the repository root so includes resolve correctly:
 
 ```bash
 gcc -std=gnu11 -O2 -I. -shared -o libnc.dll libnc.c -Wl,--out-implib,libnc.dll.a
-gcc -std=gnu11 -O2 -I. -shared -o libnc_cuda.dll real_code/libnc_cuda_backend.c -L. -lnc -Wl,--out-implib,libnc_cuda.dll.a
+gcc -std=gnu11 -O2 -I. -shared -o libnc_cuda.dll src/libnc_cuda_backend.c -L. -lnc -Wl,--out-implib,libnc_cuda.dll.a
 ```
 
 ## Notes
@@ -39,3 +39,4 @@ gcc -std=gnu11 -O2 -I. -shared -o libnc_cuda.dll real_code/libnc_cuda_backend.c 
 - Keep `#include` directives at the top of files.
 - Keep public API behavior aligned with `pseudo_code/` unless the pseudocode is clearly broken. In that case, prefer a logically correct implementation.
 - When you change runtime behavior, update both this README and `IMPLEMENTATION_CHECKLIST.md`.
+- The repository has been validated on Windows 10 so far; Linux/WSL support is being checked separately.
