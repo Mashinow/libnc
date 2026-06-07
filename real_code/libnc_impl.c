@@ -241,6 +241,7 @@ typedef struct NCSGDOptState {
     struct list_head vars;
 } NCSGDOptState;
 
+ #include "libnc_device_helpers.c"
 static void context_track_node(NCContext *ctx, NCNode *n);
 void nc_node_set_parent(NCNode *n, int arg_index, const NCNode *n1);
 
@@ -703,9 +704,9 @@ NCDevice *nc_new_cpu_device(NCContext *ctx)
 
 NCDevice *nc_new_cuda_device(NCContext *ctx, int device_index)
 {
-    (void)ctx;
-    (void)device_index;
-    return NULL;
+    if (!ctx)
+        return NULL;
+    return nc_device_alloc_cuda_compat(ctx, device_index);
 }
 
 NCDevice *nc_new_device(NCContext *ctx, const char *device_name)
@@ -714,6 +715,13 @@ NCDevice *nc_new_device(NCContext *ctx, const char *device_name)
         return NULL;
     if (!strcmp(device_name, "cpu"))
         return nc_new_cpu_device(ctx);
+    if (!strncmp(device_name, "cuda", 4)) {
+        int device_index = 0;
+        const char *p = device_name + 4;
+        if (*p == ':')
+            device_index = atoi(p + 1);
+        return nc_new_cuda_device(ctx, device_index);
+    }
     return NULL;
 }
 
