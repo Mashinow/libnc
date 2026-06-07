@@ -219,6 +219,7 @@ static void nc_store_f32(void *ptr, NCTypeEnum type, float value)
     case NC_TYPE_BF16: {
         uint32_t u;
         memcpy(&u, &value, sizeof(u));
+        u += 0x7fff + ((u >> 16) & 1);
         *(uint16_t *)ptr = (uint16_t)(u >> 16);
         break;
     }
@@ -642,19 +643,29 @@ void nc_context_end(NCContext *ctx)
     while (!list_empty(&ctx->tensors)) {
         struct list_head *el = ctx->tensors.next;
         NCTensor *t = list_entry(el, NCTensor, link);
-        t->ref_count = 1;
-        nc_free_tensor(t);
+        context_untrack_tensor(t);
+        nc_free(t->name);
+        t->name = NULL;
+        nc_free(t);
     }
     while (!list_empty(&ctx->buffers)) {
         struct list_head *el = ctx->buffers.next;
         NCTensorBuffer *b = list_entry(el, NCTensorBuffer, link);
-        b->ref_count = 1;
-        nc_free_tensor_buffer(b);
+        context_untrack_buffer(b);
+        nc_free(b->data);
+        b->data = NULL;
+        nc_free(b);
     }
     while (!list_empty(&ctx->nodes)) {
         struct list_head *el = ctx->nodes.next;
         NCNode *n = list_entry(el, NCNode, link);
-        node_free(n);
+        context_untrack_node(n);
+        if (n->op == NC_OP_PERMUTE && n->opaque)
+            nc_free(n->opaque);
+        nc_free(n->args);
+        n->opaque = NULL;
+        n->args = NULL;
+        nc_free(n);
     }
     while (!list_empty(&ctx->devices)) {
         struct list_head *el = ctx->devices.next;
@@ -1846,8 +1857,8 @@ NCTensor *nc_make_contiguous(NCTensor *x)
     if (x->node)
         tensor_add_node(y, x->node->op, x->node->n_args, x->node->args);
     if (x->node && x->node->op == NC_OP_PERMUTE && x->node->opaque && y->node) {
-        int *axis = nc_malloc(sizeof(int) * (size_t)x->node->n_args);
-        memcpy(axis, x->node->opaque, sizeof(int) * (size_t)x->node->n_args);
+        int *axis = nc_malloc(sizeof(int) * (size_t)x->n_dims);
+        memcpy(axis, x->node->opaque, sizeof(int) * (size_t)x->n_dims);
         y->node->opaque = axis;
     }
     nc_free_tensor(x);
@@ -1893,10 +1904,10 @@ static NCTensor *matmul_2d_ex(NCTensor *w, NCTensor *x, BOOL w_trans, BOOL x_tra
 {
     if (w->n_dims != 2 || x->n_dims != 2)
         nc_error("matmul expects 2D tensors");
-    size_t wm = w_trans ? w->dims[0] : w->dims[1];
-    size_t wk = w_trans ? w->dims[1] : w->dims[0];
-    size_t xk = x_trans ? x->dims[0] : x->dims[1];
-    size_t xn = x_trans ? x->dims[1] : x->dims[0];
+    size_t wm = w_trans ? w->dims[1] : w->dims[0];
+    size_t wk = w_trans ? w->dims[0] : w->dims[1];
+    size_t xk = x_trans ? x->dims[1] : x->dims[0];
+    size_t xn = x_trans ? x->dims[0] : x->dims[1];
     if (wk != xk)
         nc_error("k == x->dims[0]");
     size_t out_dims[2] = { wm, xn };
@@ -1905,19 +1916,19 @@ static NCTensor *matmul_2d_ex(NCTensor *w, NCTensor *x, BOOL w_trans, BOOL x_tra
         nc_error("same_dims(y, x1)");
     if (!y0)
         tensor_fill_zero(y);
-    for (size_t row = 0; row < out_dims[1]; row++) {
-        for (size_t col = 0; col < out_dims[0]; col++) {
+    for (size_t row = 0; row < out_dims[0]; row++) {
+        for (size_t col = 0; col < out_dims[1]; col++) {
             float acc = 0.0f;
             for (size_t k = 0; k < wk; k++) {
-                size_t wi = (w_trans ? row * w->strides[0] + k * w->strides[1]
-                                     : k * w->strides[0] + row * w->strides[1]);
-                size_t xi = (x_trans ? k * x->strides[0] + col * x->strides[1]
-                                     : col * x->strides[0] + k * x->strides[1]);
+                size_t wi = (w_trans ? k * w->strides[0] + row * w->strides[1]
+                                     : row * w->strides[0] + k * w->strides[1]);
+                size_t xi = (x_trans ? col * x->strides[0] + k * x->strides[1]
+                                     : k * x->strides[0] + col * x->strides[1]);
                 float a = nc_load_f32((uint8_t *)tensor_const_data_ptr(w) + wi, w->item_type);
                 float b = nc_load_f32((uint8_t *)tensor_const_data_ptr(x) + xi, x->item_type);
                 acc += a * b;
             }
-            size_t yi = col * y->strides[0] + row * y->strides[1];
+            size_t yi = row * y->strides[0] + col * y->strides[1];
             float cur = nc_load_f32((uint8_t *)tensor_data_ptr(y) + yi, y->item_type);
             nc_store_f32((uint8_t *)tensor_data_ptr(y) + yi, y->item_type, cur + acc);
         }
@@ -1997,6 +2008,18 @@ NCTensor *nc_add_col(NCTensor *z, NCTensor *x, NCTensor *w)
 
 NCTensor *nc_get_element(NCTensor *w, NCTensor *x)
 {
+    if (w->n_dims == 1 && x->n_dims == 0) {
+        size_t idx = (size_t)lrintf(nc_load_f32(tensor_const_data_ptr(x), x->item_type));
+        if (idx >= w->dims[0])
+            nc_error("get_element index");
+        NCTensor *y = nc_new_scalar(w->device, w->item_type);
+        size_t wi = idx * w->strides[0];
+        float v = nc_load_f32((const uint8_t *)tensor_const_data_ptr(w) + wi, w->item_type);
+        nc_store_f32(tensor_data_ptr(y), y->item_type, v);
+        NCTensor *args[2] = { w, x };
+        tensor_add_node(y, NC_OP_GET_ELEMENT, 2, args);
+        return y;
+    }
     if (w->n_dims != 2 || x->n_dims != 1)
         nc_error("get_element shapes");
     size_t out_dims[1] = { x->dims[0] };
@@ -2016,6 +2039,19 @@ NCTensor *nc_get_element(NCTensor *w, NCTensor *x)
 
 NCTensor *nc_add_element(NCTensor *z, NCTensor *x, NCTensor *w)
 {
+    if (w->n_dims == 1 && z->n_dims == 0 && x->n_dims == 0) {
+        size_t idx = (size_t)lrintf(nc_load_f32(tensor_const_data_ptr(x), x->item_type));
+        if (idx >= w->dims[0])
+            nc_error("add_element index");
+        NCTensor *y = nc_new_tensor_from_tensor(w);
+        size_t wi = idx * y->strides[0];
+        float cur = nc_load_f32((uint8_t *)tensor_const_data_ptr(y) + wi, y->item_type);
+        float add = nc_load_f32(tensor_const_data_ptr(z), z->item_type);
+        nc_store_f32((uint8_t *)tensor_data_ptr(y) + wi, y->item_type, cur + add);
+        NCTensor *args[3] = { z, x, w };
+        tensor_add_node(y, NC_OP_ADD_ELEMENT, 3, args);
+        return y;
+    }
     if (w->n_dims != 2 || z->n_dims != 1 || x->n_dims != 1)
         nc_error("add_element shapes");
     NCTensor *y = nc_new_tensor_from_tensor(w);
@@ -2065,21 +2101,35 @@ NCTensor *nc_soft_max(NCTensor *x)
 
 NCTensor *nc_indexed_log(NCTensor *x, NCTensor *eout)
 {
+    if ((x->n_dims == 1 && eout->n_dims == 0) || (x->n_dims == 2 && eout->n_dims == 1)) {
+        NCTensor *y;
+        if (x->n_dims == 1) {
+            size_t idx = (size_t)lrintf(nc_load_f32(tensor_const_data_ptr(eout), eout->item_type));
+            if (idx >= x->dims[0])
+                nc_error("indexed_log index");
+            y = nc_new_scalar(x->device, x->item_type);
+            size_t off = idx * x->strides[0];
+            float v = logf(fmaxf(1e-30f, nc_load_f32((const uint8_t *)tensor_const_data_ptr(x) + off, x->item_type)));
+            nc_store_f32((uint8_t *)tensor_data_ptr(y), y->item_type, v);
+        } else {
+            size_t out_dims[1] = { eout->dims[0] };
+            y = nc_new_tensor(x->device, x->item_type, 1, out_dims);
+            for (size_t i = 0; i < eout->dims[0]; i++) {
+                size_t idx = (size_t)lrintf(nc_load_f32((const uint8_t *)tensor_const_data_ptr(eout) + i * eout->item_size, eout->item_type));
+                if (idx >= x->dims[1])
+                    nc_error("indexed_log index");
+                size_t off = i * x->strides[0] + idx * x->strides[1];
+                float v = logf(fmaxf(1e-30f, nc_load_f32((const uint8_t *)tensor_const_data_ptr(x) + off, x->item_type)));
+                nc_store_f32((uint8_t *)tensor_data_ptr(y) + i * y->item_size, y->item_type, v);
+            }
+        }
+        NCTensor *args[2] = { x, eout };
+        tensor_add_node(y, NC_OP_INDEXED_LOG, 2, args);
+        return y;
+    }
     if (x->n_dims != 2 || eout->n_dims != 1)
         nc_error("indexed_log shapes");
-    size_t out_dims[1] = { eout->dims[0] };
-    NCTensor *y = nc_new_tensor(x->device, x->item_type, 1, out_dims);
-    for (size_t i = 0; i < eout->dims[0]; i++) {
-        size_t idx = (size_t)lrintf(nc_load_f32((const uint8_t *)tensor_const_data_ptr(eout) + i * eout->item_size, eout->item_type));
-        if (idx >= x->dims[1])
-            nc_error("indexed_log index");
-        size_t off = i * x->strides[0] + idx * x->strides[1];
-        float v = logf(fmaxf(1e-30f, nc_load_f32((const uint8_t *)tensor_const_data_ptr(x) + off, x->item_type)));
-        nc_store_f32((uint8_t *)tensor_data_ptr(y) + i * y->item_size, y->item_type, v);
-    }
-    NCTensor *args[2] = { x, eout };
-    tensor_add_node(y, NC_OP_INDEXED_LOG, 2, args);
-    return y;
+    nc_error("indexed_log shapes");
 }
 
 static NCTensor *norm_last_dim(NCTensor *x, float eps, BOOL rms)
@@ -2097,31 +2147,38 @@ static NCTensor *norm_last_dim(NCTensor *x, float eps, BOOL rms)
     for (size_t o = 0; o < outer; o++) {
         const uint8_t *xb = tensor_const_data_ptr(x) + o * inner * x->item_size;
         uint8_t *yb = tensor_data_ptr(y) + o * inner * y->item_size;
-        float mean = 0.0f;
-        float var = 0.0f;
+        double mean = 0.0;
+        double var = 0.0;
         for (size_t i = 0; i < inner; i++) {
-            float v = nc_load_f32(xb + i * x->item_size, x->item_type);
+            double v = nc_load_f32(xb + i * x->item_size, x->item_type);
             mean += v;
             if (rms)
                 var += v * v;
         }
-        mean /= (float)inner;
+        mean /= (double)inner;
         if (!rms) {
             for (size_t i = 0; i < inner; i++) {
-                float v = nc_load_f32(xb + i * x->item_size, x->item_type) - mean;
+                double v = nc_load_f32(xb + i * x->item_size, x->item_type) - mean;
                 var += v * v;
             }
-            var /= (float)inner;
+            var /= (double)inner;
         } else {
-            var /= (float)inner;
+            var /= (double)inner;
         }
-        float denom = sqrtf(var + eps);
-        nc_store_f32((uint8_t *)tensor_data_ptr(aux) + o * aux->item_size, aux->item_type, 1.0f / denom);
+        double denom = sqrt(var + (double)eps);
+        nc_store_f32((uint8_t *)tensor_data_ptr(aux) + o * aux->item_size, aux->item_type, (float)(1.0 / denom));
         for (size_t i = 0; i < inner; i++) {
-            float v = nc_load_f32(xb + i * x->item_size, x->item_type);
+            double v = nc_load_f32(xb + i * x->item_size, x->item_type);
             if (!rms)
                 v -= mean;
-            nc_store_f32(yb + i * y->item_size, y->item_type, v / denom);
+            float out_v = (float)(v / denom);
+            if (rms && y->item_type == NC_TYPE_BF16) {
+                uint32_t u;
+                memcpy(&u, &out_v, sizeof(u));
+                *(uint16_t *)(yb + i * y->item_size) = (uint16_t)(u >> 16);
+            } else {
+                nc_store_f32(yb + i * y->item_size, y->item_type, out_v);
+            }
         }
     }
     NCTensor *args[2] = { x, aux };
@@ -2705,13 +2762,14 @@ static void backward_tensor(NCTensor *x, NCTensor *grad, NCParamUpdateFunc *para
         return;
     }
     case NC_OP_PERMUTE: {
-        int n = x->node->n_args;
+        NCTensor *src = x->node->args[0];
+        int n = src->n_dims;
         int *axis = (int *)x->node->opaque;
         if (axis && n > 0) {
             int inv[NC_N_DIMS_MAX] = {0};
             for (int i = 0; i < n; i++)
                 inv[axis[i]] = i;
-            backward_tensor(x->node->args[0], nc_permute(grad, n, inv), param_update_func, flags);
+            backward_tensor(src, nc_permute(grad, n, inv), param_update_func, flags);
             return;
         }
         break;
@@ -2729,39 +2787,14 @@ static void backward_tensor(NCTensor *x, NCTensor *grad, NCParamUpdateFunc *para
         NCTensor *y0 = x->node->args[2];
         BOOL w_trans = x->node->bvalue;
         BOOL x_trans = x->node->value != 0.0f;
-        NCTensor *gw = NULL;
-        NCTensor *gx = NULL;
-        if (!w_trans && !x_trans) {
-            NCTensor *in_t = nc_transpose(nc_dup_tensor(in));
-            gw = nc_matmul(grad, in_t);
-            nc_free_tensor(in_t);
-            NCTensor *w_t = nc_transpose(nc_dup_tensor(w));
-            gx = nc_matmul(w_t, grad);
-            nc_free_tensor(w_t);
-        } else if (w_trans && !x_trans) {
-            NCTensor *g_t = nc_transpose(nc_dup_tensor(grad));
-            gw = nc_matmul(in, g_t);
-            nc_free_tensor(g_t);
-            gx = nc_matmul(w, grad);
-        } else if (!w_trans && x_trans) {
-            gw = nc_matmul(grad, in);
-            NCTensor *w_t = nc_transpose(nc_dup_tensor(w));
-            NCTensor *g_t = nc_transpose(nc_dup_tensor(grad));
-            gx = nc_matmul(g_t, w_t);
-            nc_free_tensor(w_t);
-            nc_free_tensor(g_t);
-        } else {
-            NCTensor *in_t = nc_transpose(nc_dup_tensor(in));
-            NCTensor *g_t = nc_transpose(nc_dup_tensor(grad));
-            gw = nc_matmul(in_t, g_t);
-            nc_free_tensor(in_t);
-            nc_free_tensor(g_t);
-            NCTensor *w_t = nc_transpose(nc_dup_tensor(w));
-            NCTensor *g2_t = nc_transpose(nc_dup_tensor(grad));
-            gx = nc_matmul(g2_t, w_t);
-            nc_free_tensor(w_t);
-            nc_free_tensor(g2_t);
-        }
+        NCTensor *w_eff = w_trans ? nc_transpose(nc_dup_tensor(w)) : nc_dup_tensor(w);
+        NCTensor *x_eff = x_trans ? nc_transpose(nc_dup_tensor(in)) : nc_dup_tensor(in);
+        NCTensor *gw_eff = nc_matmul(grad, nc_transpose(nc_dup_tensor(x_eff)));
+        NCTensor *gx_eff = nc_matmul(nc_transpose(nc_dup_tensor(w_eff)), grad);
+        NCTensor *gw = w_trans ? nc_transpose(gw_eff) : gw_eff;
+        NCTensor *gx = x_trans ? nc_transpose(gx_eff) : gx_eff;
+        nc_free_tensor(w_eff);
+        nc_free_tensor(x_eff);
         backward_tensor(w, gw, param_update_func, flags);
         backward_tensor(in, gx, param_update_func, flags);
         backward_tensor(y0, nc_dup_tensor(grad), param_update_func, flags);
@@ -2801,12 +2834,24 @@ static void backward_tensor(NCTensor *x, NCTensor *grad, NCParamUpdateFunc *para
         NCTensor *idx = x->node->args[1];
         NCTensor *g0 = nc_new_tensor_nz(w->device, w->item_type, w->n_dims, w->dims);
         tensor_fill_zero(g0);
-        for (size_t c = 0; c < idx->dims[0]; c++) {
-            size_t row = (size_t)lrintf(nc_load_f32((const uint8_t *)tensor_const_data_ptr(idx) + c * idx->item_size, idx->item_type));
-            size_t wi = row * w->strides[0] + c * w->strides[1];
+        if (w->n_dims == 1 && idx->n_dims == 0) {
+            size_t row = (size_t)lrintf(nc_load_f32(tensor_const_data_ptr(idx), idx->item_type));
+            if (row >= w->dims[0])
+                nc_error("get_element index");
+            size_t wi = row * w->strides[0];
             float cur = nc_load_f32((uint8_t *)tensor_data_ptr(g0) + wi, g0->item_type);
-            float add = nc_load_f32((const uint8_t *)tensor_const_data_ptr(grad) + c * grad->item_size, grad->item_type);
+            float add = nc_load_f32(tensor_const_data_ptr(grad), grad->item_type);
             nc_store_f32((uint8_t *)tensor_data_ptr(g0) + wi, g0->item_type, cur + add);
+        } else {
+            for (size_t c = 0; c < idx->dims[0]; c++) {
+                size_t row = (size_t)lrintf(nc_load_f32((const uint8_t *)tensor_const_data_ptr(idx) + c * idx->item_size, idx->item_type));
+                if (row >= w->dims[0])
+                    nc_error("get_element index");
+                size_t wi = row * w->strides[0] + c * w->strides[1];
+                float cur = nc_load_f32((uint8_t *)tensor_data_ptr(g0) + wi, g0->item_type);
+                float add = nc_load_f32((const uint8_t *)tensor_const_data_ptr(grad) + c * grad->item_size, grad->item_type);
+                nc_store_f32((uint8_t *)tensor_data_ptr(g0) + wi, g0->item_type, cur + add);
+            }
         }
         backward_tensor(w, g0, param_update_func, flags);
         nc_free_tensor(grad);
@@ -2855,13 +2900,26 @@ static void backward_tensor(NCTensor *x, NCTensor *grad, NCParamUpdateFunc *para
         NCTensor *eout = x->node->args[1];
         NCTensor *g0 = nc_new_tensor_nz(src->device, src->item_type, src->n_dims, src->dims);
         tensor_fill_zero(g0);
-        for (size_t i = 0; i < eout->dims[0]; i++) {
-            size_t idx = (size_t)lrintf(nc_load_f32((const uint8_t *)tensor_const_data_ptr(eout) + i * eout->item_size, eout->item_type));
-            size_t off = i * src->strides[0] + idx * src->strides[1];
+        if (src->n_dims == 1 && eout->n_dims == 0) {
+            size_t idx = (size_t)lrintf(nc_load_f32(tensor_const_data_ptr(eout), eout->item_type));
+            if (idx >= src->dims[0])
+                nc_error("indexed_log index");
+            size_t off = idx * src->strides[0];
             float xv = nc_load_f32((const uint8_t *)tensor_const_data_ptr(src) + off, src->item_type);
-            float gv = nc_load_f32((const uint8_t *)tensor_const_data_ptr(grad) + i * grad->item_size, grad->item_type);
+            float gv = nc_load_f32(tensor_const_data_ptr(grad), grad->item_type);
             float cur = nc_load_f32((uint8_t *)tensor_data_ptr(g0) + off, g0->item_type);
             nc_store_f32((uint8_t *)tensor_data_ptr(g0) + off, g0->item_type, cur + gv / fmaxf(1e-30f, xv));
+        } else {
+            for (size_t i = 0; i < eout->dims[0]; i++) {
+                size_t idx = (size_t)lrintf(nc_load_f32((const uint8_t *)tensor_const_data_ptr(eout) + i * eout->item_size, eout->item_type));
+                if (idx >= src->dims[1])
+                    nc_error("indexed_log index");
+                size_t off = i * src->strides[0] + idx * src->strides[1];
+                float xv = nc_load_f32((const uint8_t *)tensor_const_data_ptr(src) + off, src->item_type);
+                float gv = nc_load_f32((const uint8_t *)tensor_const_data_ptr(grad) + i * grad->item_size, grad->item_type);
+                float cur = nc_load_f32((uint8_t *)tensor_data_ptr(g0) + off, g0->item_type);
+                nc_store_f32((uint8_t *)tensor_data_ptr(g0) + off, g0->item_type, cur + gv / fmaxf(1e-30f, xv));
+            }
         }
         backward_tensor(src, g0, param_update_func, flags);
         nc_free_tensor(grad);
@@ -2870,6 +2928,7 @@ static void backward_tensor(NCTensor *x, NCTensor *grad, NCParamUpdateFunc *para
     case NC_OP_LAYER_NORM:
     case NC_OP_RMS_NORM: {
         NCTensor *src = x->node->args[0];
+        NCTensor *aux = x->node->args[1];
         BOOL bf16_chain = src->item_type == NC_TYPE_BF16 && src->node && src->node->op == NC_OP_CONVERT &&
             src->node->n_args > 0 && src->node->args[0] && src->node->args[0]->node &&
             src->node->args[0]->node->op == NC_OP_PARAM;
@@ -2886,91 +2945,86 @@ static void backward_tensor(NCTensor *x, NCTensor *grad, NCParamUpdateFunc *para
             const uint8_t *xb = tensor_const_data_ptr(src) + o * inner * src->item_size;
             const uint8_t *yb = tensor_const_data_ptr(x) + o * inner * x->item_size;
             const uint8_t *gb = tensor_const_data_ptr(grad) + o * inner * grad->item_size;
+            const uint8_t *ab = tensor_const_data_ptr(aux) + o * aux->item_size;
             uint8_t *ob = tensor_data_ptr(g0) + o * inner * g0->item_size;
+            double invstd = nc_load_f32(ab, aux->item_type);
+            long double mean = 0.0L;
+            if (!rms) {
+                for (size_t i = 0; i < inner; i++)
+                    mean += nc_load_f32(xb + i * src->item_size, src->item_type);
+                mean /= (long double)inner;
+            }
             if (bf16_chain) {
-                float mean = 0.0f;
-                float var = 0.0f;
                 if (rms) {
-                    float sumsq = 0.0f;
-                    float sum_gx = 0.0f;
+                    const NCTensor *orig = (src->node && src->node->n_args > 0 && src->node->args[0]) ? src->node->args[0] : src;
+                    const uint8_t *origb = tensor_const_data_ptr(orig) + o * inner * orig->item_size;
+                    long double sum_gx = 0.0L;
+                    long double mean0 = 0.0L;
+                    for (size_t i = 0; i < inner; i++)
+                        mean0 += nc_load_f32(origb + i * orig->item_size, orig->item_type) * nc_load_f32(origb + i * orig->item_size, orig->item_type);
+                    mean0 /= (long double)inner;
+                    long double inv0 = 1.0L / sqrtl(mean0 + (long double)eps);
                     for (size_t i = 0; i < inner; i++) {
-                        float xv = nc_load_f32(xb + i * src->item_size, src->item_type);
-                        float gv = nc_load_f32(gb + i * grad->item_size, grad->item_type);
-                        sumsq += xv * xv;
+                        long double gv = nc_load_f32(gb + i * grad->item_size, grad->item_type);
+                        long double xv = nc_load_f32(origb + i * orig->item_size, orig->item_type);
                         sum_gx += gv * xv;
                     }
-                    float denom = sqrtf(sumsq / (float)inner + eps);
                     for (size_t i = 0; i < inner; i++) {
-                        float xv = nc_load_f32(xb + i * src->item_size, src->item_type);
-                        float gv = nc_load_f32(gb + i * grad->item_size, grad->item_type);
-                        float dx = gv / denom - xv * sum_gx / ((float)inner * denom * denom * denom);
-                        nc_store_f32(ob + i * g0->item_size, g0->item_type, dx);
+                        long double gv = nc_load_f32(gb + i * grad->item_size, grad->item_type);
+                        long double xv = nc_load_f32(origb + i * orig->item_size, orig->item_type);
+                        long double dx = gv * inv0 - xv * sum_gx * inv0 * inv0 * inv0 / (long double)inner;
+                        nc_store_f32(ob + i * g0->item_size, g0->item_type, (float)dx);
                     }
                 } else {
                     float sum_g = 0.0f;
-                    float sum_gy = 0.0f;
-                    for (size_t i = 0; i < inner; i++) {
-                        float xv = nc_load_f32(xb + i * src->item_size, src->item_type);
-                        mean += xv;
-                        var += xv * xv;
-                    }
-                    mean /= (float)inner;
-                    var = var / (float)inner - mean * mean;
+                    float sum_gn = 0.0f;
                     for (size_t i = 0; i < inner; i++) {
                         float gv = nc_load_f32(gb + i * grad->item_size, grad->item_type);
-                        float yv = nc_load_f32(yb + i * x->item_size, x->item_type);
                         sum_g += gv;
-                        sum_gy += gv * yv;
+                        float xv = nc_load_f32(xb + i * src->item_size, src->item_type);
+                        float norm = (xv - (float)mean) * (float)invstd;
+                        sum_gn += gv * norm;
                     }
-                    float denom = sqrtf(var + eps);
                     for (size_t i = 0; i < inner; i++) {
                         float gv = nc_load_f32(gb + i * grad->item_size, grad->item_type);
                         float yv = nc_load_f32(yb + i * x->item_size, x->item_type);
-                        float dx = (gv - sum_g / (float)inner - yv * sum_gy / (float)inner) / denom;
+                        float norm = yv;
+                        float dx = (gv - sum_g / (float)inner - norm * sum_gn / (float)inner) * (float)invstd;
                         nc_store_f32(ob + i * g0->item_size, g0->item_type, dx);
                     }
                 }
             } else {
                 if (rms) {
-                    float sumsq = 0.0f;
-                    float sum_gx = 0.0f;
+                    double sum_gn = 0.0;
                     for (size_t i = 0; i < inner; i++) {
-                        float xv = nc_load_f32(xb + i * src->item_size, src->item_type);
-                        float gv = nc_load_f32(gb + i * grad->item_size, grad->item_type);
-                        sumsq += xv * xv;
-                        sum_gx += gv * xv;
+                        double xv = nc_load_f32(xb + i * src->item_size, src->item_type);
+                        double gv = nc_load_f32(gb + i * grad->item_size, grad->item_type);
+                        double norm = xv * invstd;
+                        sum_gn += gv * norm;
                     }
-                    float denom = sqrtf(sumsq / (float)inner + eps);
                     for (size_t i = 0; i < inner; i++) {
-                        float xv = nc_load_f32(xb + i * src->item_size, src->item_type);
-                        float gv = nc_load_f32(gb + i * grad->item_size, grad->item_type);
-                        float dx = gv / denom - xv * sum_gx / ((float)inner * denom * denom * denom);
-                        nc_store_f32(ob + i * g0->item_size, g0->item_type, dx);
+                        double xv = nc_load_f32(xb + i * src->item_size, src->item_type);
+                        double gv = nc_load_f32(gb + i * grad->item_size, grad->item_type);
+                        double norm = xv * invstd;
+                        double dx = (gv - norm * sum_gn / (double)inner) * invstd;
+                        nc_store_f32(ob + i * g0->item_size, g0->item_type, (float)dx);
                     }
                 } else {
-                    float var = 0.0f;
-                    float mean = 0.0f;
+                    double sum_g = 0.0;
+                    double sum_gn = 0.0;
                     for (size_t i = 0; i < inner; i++) {
-                        float xv = nc_load_f32(xb + i * src->item_size, src->item_type);
-                        mean += xv;
-                        var += xv * xv;
-                    }
-                    mean /= (float)inner;
-                    var = var / (float)inner - mean * mean;
-                    float sum_g = 0.0f;
-                    float sum_gy = 0.0f;
-                    for (size_t i = 0; i < inner; i++) {
-                        float gv = nc_load_f32(gb + i * grad->item_size, grad->item_type);
-                        float yv = nc_load_f32(yb + i * x->item_size, x->item_type);
+                        double gv = nc_load_f32(gb + i * grad->item_size, grad->item_type);
                         sum_g += gv;
-                        sum_gy += gv * yv;
+                        double xv = nc_load_f32(xb + i * src->item_size, src->item_type);
+                        double norm = (xv - mean) * invstd;
+                        sum_gn += gv * norm;
                     }
-                    float denom = sqrtf(var + eps);
                     for (size_t i = 0; i < inner; i++) {
-                        float gv = nc_load_f32(gb + i * grad->item_size, grad->item_type);
-                        float yv = nc_load_f32(yb + i * x->item_size, x->item_type);
-                        float dx = (gv - sum_g / (float)inner - yv * sum_gy / (float)inner) / denom;
-                        nc_store_f32(ob + i * g0->item_size, g0->item_type, dx);
+                        double gv = nc_load_f32(gb + i * grad->item_size, grad->item_type);
+                        double xv = nc_load_f32(xb + i * src->item_size, src->item_type);
+                        double norm = (xv - mean) * invstd;
+                        double dx = (gv - sum_g / (double)inner - norm * sum_gn / (double)inner) * invstd;
+                        nc_store_f32(ob + i * g0->item_size, g0->item_type, (float)dx);
                     }
                 }
             }
