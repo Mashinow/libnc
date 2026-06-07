@@ -1,0 +1,54 @@
+LibNC Reconstruction License and Notice
+
+1. Original LibNC
+
+The original LibNC project, including its design, name, documentation, and any
+code or binary material created by Fabrice Bellard, remains the property of
+Fabrice Bellard.
+
+The original upstream LibNC page states that the library is provided as a
+binary shared library and that access to source code should be requested from
+the author.
+
+2. Decompiled and reference material
+
+Files under `decompile/` are reference and analysis material derived from
+upstream binaries, pseudocode, and structural notes. They are included here for
+reverse-engineering and compatibility work. They are not a claim of ownership
+over the original work.
+
+3. Reconstructed source code
+
+The reconstructed implementation in this repository, including the maintained
+code under `src/`, the top-level integration files, the documentation written
+for this reconstruction, and the test programs in `tests/`, was created as a
+clean-room style reconstruction effort.
+
+To the extent that these files contain original authorship by the reconstruction
+contributors, they are released under the MIT License:
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+4. Important limitation
+
+This file does not transfer, replace, or limit any rights that Fabrice Bellard
+may hold in the original LibNC project or in any original upstream materials.
+If any reconstructed file is determined to be too closely derived from upstream
+material to be relicensed independently, the original upstream rights continue
+to apply to that portion.

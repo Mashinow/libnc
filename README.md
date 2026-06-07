@@ -5,6 +5,7 @@ This repository contains a clean-room style reconstruction of `libnc` made from 
 The original `libnc` project was created by [Fabrice Bellard](https://bellard.org/libnc/). This repository is only a reconstruction effort based on public headers and decompiled material, and all rights to the original project remain with Fabrice Bellard.
 
 Documentation: [doc/libnc.md](./doc/libnc.md)
+License: [LICENSE](./LICENSE)
 
 ## What is in this repo
 
