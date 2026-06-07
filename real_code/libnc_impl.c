@@ -365,21 +365,32 @@ static void tensor_copy_broadcast_recursive(NCTensor *dst, const NCTensor *src,
     }
 }
 
-static void tensor_reduce_broadcast_recursive(double *acc, const NCTensor *src, const NCTensor *dst,
-                                              int dim, size_t soff, size_t doff)
+static size_t tensor_reduce_broadcast_output_index(const NCTensor *like, const size_t *coords, int src_ndims)
+{
+    size_t out_idx = 0;
+    for (int dim = 0; dim < like->n_dims; dim++) {
+        size_t coord = 0;
+        int src_dim = dim;
+        if (src_dim >= 0 && like->dims[dim] != 1)
+            coord = coords[src_dim];
+        out_idx = out_idx * like->dims[dim] + coord;
+    }
+    return out_idx;
+}
+
+static void tensor_reduce_broadcast_recursive(double *acc, const NCTensor *src, const NCTensor *like,
+                                              int dim, size_t soff, size_t *coords)
 {
     if (dim == src->n_dims) {
-        acc[doff] += (double)nc_load_elem(src, tensor_const_data_ptr(src), soff);
+        size_t out_idx = tensor_reduce_broadcast_output_index(like, coords, src->n_dims);
+        acc[out_idx] += (double)nc_load_elem(src, tensor_const_data_ptr(src), soff);
         return;
     }
-    int dst_dim = dim + dst->n_dims - src->n_dims;
-    size_t dstride = 0;
-    if (dst_dim >= 0 && dst_dim < dst->n_dims && dst->dims[dst_dim] != 1)
-        dstride = dst->strides[dst_dim];
     for (size_t i = 0; i < src->dims[dim]; i++) {
-        tensor_reduce_broadcast_recursive(acc, src, dst, dim + 1,
+        coords[dim] = i;
+        tensor_reduce_broadcast_recursive(acc, src, like, dim + 1,
                                           soff + i * src->strides[dim],
-                                          doff + i * dstride);
+                                          coords);
     }
 }
 
@@ -404,7 +415,8 @@ static NCTensor *tensor_reduce_broadcast_like(const NCTensor *src, const NCTenso
         return NULL;
     }
     tensor_fill_zero(acc);
-    tensor_reduce_broadcast_recursive(tmp, src, acc, 0, 0, 0);
+    size_t coords[NC_N_DIMS_MAX] = {0};
+    tensor_reduce_broadcast_recursive(tmp, src, like, 0, 0, coords);
     for (size_t i = 0; i < total; i++)
         nc_store_f32((uint8_t *)tensor_data_ptr(acc) + i * acc->item_size, acc->item_type, (float)tmp[i]);
     free(tmp);
@@ -974,22 +986,47 @@ static uint32_t rnd_u32(NCRNDState *s)
 {
     if (!s)
         return 0;
-    uint32_t z = (s->state += 0x9e3779b9u);
-    z ^= z >> 16;
-    z *= 0x7feb352du;
-    z ^= z >> 15;
-    z *= 0x846ca68bu;
-    z ^= z >> 16;
-    return z;
+    if (s->tab && s->tab_len) {
+        size_t idx = s->tab_index;
+        if (idx >= s->tab_len * 6)
+            idx = 0;
+        s->tab_index = idx + 1;
+        return s->tab[idx];
+    }
+    return s->state;
 }
 
 NCRNDState *nc_rnd_init(NCDevice *d, uint32_t seed)
 {
     NCRNDState *s = nc_mallocz(sizeof(*s));
     s->device = d;
-    s->state = seed ? seed : 1;
-    s->tab = NULL;
-    s->tab_len = 0;
+    s->tab_len = 0x2000;
+    s->tab_index = 0;
+    s->state = (seed == (uint32_t)-123456789) ? 1u : seed + 123456789u;
+    s->tab = (uint32_t *)aligned_malloc(sizeof(uint32_t) * s->tab_len * 6, 64);
+    if (!s->tab)
+        nc_error("out of memory\n");
+    uint32_t *t0 = s->tab;
+    uint32_t *t1 = t0 + s->tab_len;
+    uint32_t *t2 = t1 + s->tab_len;
+    uint32_t *t3 = t2 + s->tab_len;
+    uint32_t *t4 = t3 + s->tab_len;
+    uint32_t *t5 = t4 + s->tab_len;
+    uint32_t v = s->state;
+    for (size_t i = 0; i < s->tab_len; i++) {
+        uint32_t v1 = 1103515245u * v + 12347u;
+        uint32_t v2 = 1103515245u * v1 + 12347u;
+        uint32_t v3 = 1103515245u * v2 + 12347u;
+        uint32_t v4 = 1103515245u * v3 + 12347u;
+        uint32_t v5 = 1103515245u * v4 + 12347u;
+        v = 1103515245u * v5 + 12347u;
+        t0[i] = v1;
+        t1[i] = v2;
+        t2[i] = v3;
+        t3[i] = v4;
+        t4[i] = v5;
+        t5[i] = v;
+    }
     s->tab_index = 0;
     init_list_head(&s->link);
     return s;
@@ -999,7 +1036,7 @@ void nc_rnd_end(NCRNDState *s)
 {
     if (!s)
         return;
-    nc_free(s->tab);
+    aligned_free(s->tab);
     nc_free(s);
 }
 
@@ -1169,10 +1206,10 @@ NCTensor *nc_convert(NCTensor *x, NCTypeEnum new_type)
     return y;
 }
 
-static float fn_add(float a, float b, void *opaque) { (void)opaque; return a + b; }
-static float fn_sub(float a, float b, void *opaque) { (void)opaque; return a - b; }
-static float fn_mul(float a, float b, void *opaque) { (void)opaque; return a * b; }
-static float fn_div(float a, float b, void *opaque) { (void)opaque; return a / b; }
+static float fn_add(float a, float b, void *opaque) { (void)opaque; return (float)((double)a + (double)b); }
+static float fn_sub(float a, float b, void *opaque) { (void)opaque; return (float)((double)a - (double)b); }
+static float fn_mul(float a, float b, void *opaque) { (void)opaque; return (float)((double)a * (double)b); }
+static float fn_div(float a, float b, void *opaque) { (void)opaque; return (float)((double)a / (double)b); }
 static float fn_min(float a, float b, void *opaque) { (void)opaque; return a < b ? a : b; }
 static float fn_max(float a, float b, void *opaque) { (void)opaque; return a > b ? a : b; }
 
@@ -2050,6 +2087,8 @@ static NCTensor *norm_last_dim(NCTensor *x, float eps, BOOL rms)
     if (x->n_dims == 0)
         return nc_dup_tensor(x);
     NCTensor *y = nc_new_tensor_nz(x->device, x->item_type, x->n_dims, x->dims);
+    size_t aux_ndims = x->n_dims > 0 ? (size_t)x->n_dims - 1 : 0;
+    NCTensor *aux = nc_new_tensor_nz(x->device, NC_TYPE_F32, (int)aux_ndims, x->dims);
     int axis = x->n_dims - 1;
     size_t outer = 1;
     for (int i = 0; i < axis; i++)
@@ -2058,34 +2097,35 @@ static NCTensor *norm_last_dim(NCTensor *x, float eps, BOOL rms)
     for (size_t o = 0; o < outer; o++) {
         const uint8_t *xb = tensor_const_data_ptr(x) + o * inner * x->item_size;
         uint8_t *yb = tensor_data_ptr(y) + o * inner * y->item_size;
-        double mean = 0.0;
-        double var = 0.0;
+        float mean = 0.0f;
+        float var = 0.0f;
         for (size_t i = 0; i < inner; i++) {
             float v = nc_load_f32(xb + i * x->item_size, x->item_type);
             mean += v;
             if (rms)
-                var += (double)v * (double)v;
+                var += v * v;
         }
-        mean /= (double)inner;
+        mean /= (float)inner;
         if (!rms) {
             for (size_t i = 0; i < inner; i++) {
-                double v = nc_load_f32(xb + i * x->item_size, x->item_type) - mean;
+                float v = nc_load_f32(xb + i * x->item_size, x->item_type) - mean;
                 var += v * v;
             }
-            var /= (double)inner;
+            var /= (float)inner;
         } else {
-            var /= (double)inner;
+            var /= (float)inner;
         }
-        float denom = sqrtf((float)var + eps);
+        float denom = sqrtf(var + eps);
+        nc_store_f32((uint8_t *)tensor_data_ptr(aux) + o * aux->item_size, aux->item_type, 1.0f / denom);
         for (size_t i = 0; i < inner; i++) {
             float v = nc_load_f32(xb + i * x->item_size, x->item_type);
             if (!rms)
-                v -= (float)mean;
+                v -= mean;
             nc_store_f32(yb + i * y->item_size, y->item_type, v / denom);
         }
     }
-    NCTensor *args[1] = { x };
-    tensor_add_node(y, rms ? NC_OP_RMS_NORM : NC_OP_LAYER_NORM, 1, args);
+    NCTensor *args[2] = { x, aux };
+    tensor_add_node(y, rms ? NC_OP_RMS_NORM : NC_OP_LAYER_NORM, 2, args);
     if (y->node) {
         y->node->fvalue = eps;
         y->node->bvalue = rms;
@@ -2830,7 +2870,11 @@ static void backward_tensor(NCTensor *x, NCTensor *grad, NCParamUpdateFunc *para
     case NC_OP_LAYER_NORM:
     case NC_OP_RMS_NORM: {
         NCTensor *src = x->node->args[0];
-        NCTensor *g0 = nc_new_tensor_nz(src->device, src->item_type, src->n_dims, src->dims);
+        BOOL bf16_chain = src->item_type == NC_TYPE_BF16 && src->node && src->node->op == NC_OP_CONVERT &&
+            src->node->n_args > 0 && src->node->args[0] && src->node->args[0]->node &&
+            src->node->args[0]->node->op == NC_OP_PARAM;
+        NCTypeEnum grad_type = bf16_chain ? NC_TYPE_F32 : src->item_type;
+        NCTensor *g0 = nc_new_tensor_nz(src->device, grad_type, src->n_dims, src->dims);
         size_t axis = (size_t)(src->n_dims - 1);
         size_t outer = 1;
         for (size_t i = 0; i < axis; i++)
@@ -2843,52 +2887,91 @@ static void backward_tensor(NCTensor *x, NCTensor *grad, NCParamUpdateFunc *para
             const uint8_t *yb = tensor_const_data_ptr(x) + o * inner * x->item_size;
             const uint8_t *gb = tensor_const_data_ptr(grad) + o * inner * grad->item_size;
             uint8_t *ob = tensor_data_ptr(g0) + o * inner * g0->item_size;
-            double mean = 0.0;
-            double sumsq = 0.0;
-            for (size_t i = 0; i < inner; i++) {
-                double xv = nc_load_f32(xb + i * src->item_size, src->item_type);
-                mean += xv;
-                sumsq += xv * xv;
-            }
-            mean /= (double)inner;
-            double denom;
-            if (rms) {
-                denom = sqrt(sumsq / (double)inner + (double)eps);
-                double sum_gx = 0.0;
-                for (size_t i = 0; i < inner; i++) {
-                    double xv = nc_load_f32(xb + i * src->item_size, src->item_type);
-                    double gv = nc_load_f32(gb + i * grad->item_size, grad->item_type);
-                    sum_gx += gv * xv;
-                }
-                for (size_t i = 0; i < inner; i++) {
-                    double xv = nc_load_f32(xb + i * src->item_size, src->item_type);
-                    double gv = nc_load_f32(gb + i * grad->item_size, grad->item_type);
-                    double dx = gv / denom - xv * sum_gx / ((double)inner * denom * denom * denom);
-                    nc_store_f32(ob + i * g0->item_size, g0->item_type, (float)dx);
+            if (bf16_chain) {
+                float mean = 0.0f;
+                float var = 0.0f;
+                if (rms) {
+                    float sumsq = 0.0f;
+                    float sum_gx = 0.0f;
+                    for (size_t i = 0; i < inner; i++) {
+                        float xv = nc_load_f32(xb + i * src->item_size, src->item_type);
+                        float gv = nc_load_f32(gb + i * grad->item_size, grad->item_type);
+                        sumsq += xv * xv;
+                        sum_gx += gv * xv;
+                    }
+                    float denom = sqrtf(sumsq / (float)inner + eps);
+                    for (size_t i = 0; i < inner; i++) {
+                        float xv = nc_load_f32(xb + i * src->item_size, src->item_type);
+                        float gv = nc_load_f32(gb + i * grad->item_size, grad->item_type);
+                        float dx = gv / denom - xv * sum_gx / ((float)inner * denom * denom * denom);
+                        nc_store_f32(ob + i * g0->item_size, g0->item_type, dx);
+                    }
+                } else {
+                    float sum_g = 0.0f;
+                    float sum_gy = 0.0f;
+                    for (size_t i = 0; i < inner; i++) {
+                        float xv = nc_load_f32(xb + i * src->item_size, src->item_type);
+                        mean += xv;
+                        var += xv * xv;
+                    }
+                    mean /= (float)inner;
+                    var = var / (float)inner - mean * mean;
+                    for (size_t i = 0; i < inner; i++) {
+                        float gv = nc_load_f32(gb + i * grad->item_size, grad->item_type);
+                        float yv = nc_load_f32(yb + i * x->item_size, x->item_type);
+                        sum_g += gv;
+                        sum_gy += gv * yv;
+                    }
+                    float denom = sqrtf(var + eps);
+                    for (size_t i = 0; i < inner; i++) {
+                        float gv = nc_load_f32(gb + i * grad->item_size, grad->item_type);
+                        float yv = nc_load_f32(yb + i * x->item_size, x->item_type);
+                        float dx = (gv - sum_g / (float)inner - yv * sum_gy / (float)inner) / denom;
+                        nc_store_f32(ob + i * g0->item_size, g0->item_type, dx);
+                    }
                 }
             } else {
-                double var = 0.0;
-                for (size_t i = 0; i < inner; i++) {
-                    double xv = nc_load_f32(xb + i * src->item_size, src->item_type) - mean;
-                    var += xv * xv;
-                }
-                var /= (double)inner;
-                denom = sqrt(var + (double)eps);
-                double sum_g = 0.0;
-                double sum_gy = 0.0;
-                for (size_t i = 0; i < inner; i++) {
-                    double gv = nc_load_f32(gb + i * grad->item_size, grad->item_type);
-                    double xv = nc_load_f32(xb + i * src->item_size, src->item_type);
-                    double yv = (xv - mean) / denom;
-                    sum_g += gv;
-                    sum_gy += gv * yv;
-                }
-                for (size_t i = 0; i < inner; i++) {
-                    double gv = nc_load_f32(gb + i * grad->item_size, grad->item_type);
-                    double xv = nc_load_f32(xb + i * src->item_size, src->item_type);
-                    double yv = (xv - mean) / denom;
-                    double dx = (gv - sum_g / (double)inner - yv * sum_gy / (double)inner) / denom;
-                    nc_store_f32(ob + i * g0->item_size, g0->item_type, (float)dx);
+                if (rms) {
+                    float sumsq = 0.0f;
+                    float sum_gx = 0.0f;
+                    for (size_t i = 0; i < inner; i++) {
+                        float xv = nc_load_f32(xb + i * src->item_size, src->item_type);
+                        float gv = nc_load_f32(gb + i * grad->item_size, grad->item_type);
+                        sumsq += xv * xv;
+                        sum_gx += gv * xv;
+                    }
+                    float denom = sqrtf(sumsq / (float)inner + eps);
+                    for (size_t i = 0; i < inner; i++) {
+                        float xv = nc_load_f32(xb + i * src->item_size, src->item_type);
+                        float gv = nc_load_f32(gb + i * grad->item_size, grad->item_type);
+                        float dx = gv / denom - xv * sum_gx / ((float)inner * denom * denom * denom);
+                        nc_store_f32(ob + i * g0->item_size, g0->item_type, dx);
+                    }
+                } else {
+                    float var = 0.0f;
+                    float mean = 0.0f;
+                    for (size_t i = 0; i < inner; i++) {
+                        float xv = nc_load_f32(xb + i * src->item_size, src->item_type);
+                        mean += xv;
+                        var += xv * xv;
+                    }
+                    mean /= (float)inner;
+                    var = var / (float)inner - mean * mean;
+                    float sum_g = 0.0f;
+                    float sum_gy = 0.0f;
+                    for (size_t i = 0; i < inner; i++) {
+                        float gv = nc_load_f32(gb + i * grad->item_size, grad->item_type);
+                        float yv = nc_load_f32(yb + i * x->item_size, x->item_type);
+                        sum_g += gv;
+                        sum_gy += gv * yv;
+                    }
+                    float denom = sqrtf(var + eps);
+                    for (size_t i = 0; i < inner; i++) {
+                        float gv = nc_load_f32(gb + i * grad->item_size, grad->item_type);
+                        float yv = nc_load_f32(yb + i * x->item_size, x->item_type);
+                        float dx = (gv - sum_g / (float)inner - yv * sum_gy / (float)inner) / denom;
+                        nc_store_f32(ob + i * g0->item_size, g0->item_type, dx);
+                    }
                 }
             }
         }
