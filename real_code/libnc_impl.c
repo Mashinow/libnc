@@ -244,7 +244,6 @@ typedef struct NCSGDOptState {
 static void context_track_node(NCContext *ctx, NCNode *n);
 void nc_node_set_parent(NCNode *n, int arg_index, const NCNode *n1);
 
-#include "libnc_device_helpers.c"
 #include "libnc_graph_helpers.c"
 
 static inline size_t item_shift(NCTypeEnum type)
@@ -704,9 +703,9 @@ NCDevice *nc_new_cpu_device(NCContext *ctx)
 
 NCDevice *nc_new_cuda_device(NCContext *ctx, int device_index)
 {
-    if (!ctx)
-        return NULL;
-    return nc_device_alloc_cuda_compat(ctx, device_index);
+    (void)ctx;
+    (void)device_index;
+    return NULL;
 }
 
 NCDevice *nc_new_device(NCContext *ctx, const char *device_name)
@@ -715,13 +714,6 @@ NCDevice *nc_new_device(NCContext *ctx, const char *device_name)
         return NULL;
     if (!strcmp(device_name, "cpu"))
         return nc_new_cpu_device(ctx);
-    if (!strncmp(device_name, "cuda", 4)) {
-        int device_index = 0;
-        const char *p = device_name + 4;
-        if (*p == ':')
-            device_index = atoi(p + 1);
-        return nc_new_cuda_device(ctx, device_index);
-    }
     return NULL;
 }
 
@@ -2026,6 +2018,10 @@ void nc_node_set_parent(NCNode *n, int arg_index, const NCNode *n1)
 {
     if (!n || arg_index < 0 || arg_index >= n->n_args)
         return;
+    if (n->parent)
+        nc_free_node((NCNode *)n->parent);
+    if (n1)
+        ((NCNode *)n1)->ref_count++;
     n->parent = n1;
     n->parent_arg_index = arg_index;
 }
