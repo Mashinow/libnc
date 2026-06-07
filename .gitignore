@@ -16,3 +16,4 @@ matmul_test.txt
 libnc-clean-release.tar.gz
 libnc-1.0.tar.gz
 release_stage/
+.verify_tmp/

@@ -19,10 +19,10 @@ CUDA_LIB := libnc_cuda.dll
 CUDA_IMPLIB := libnc_cuda.dll.a
 TEST_BINS := nctest.exe matmul_test.exe ncspeed.exe own_tests.exe
 RUN_ENV :=
-RUN_NCTEST := ./nctest.exe -d cpu
-RUN_MATMUL := ./matmul_test.exe -c 0 0 4 4 4 && ./matmul_test.exe -c 1 0 4 4 4 && ./matmul_test.exe -c 0 1 4 4 4
-RUN_NSPEED := ./ncspeed.exe -d cpu -n 10000 -w 64 add mul sum reduce_sum_sqr sigmoid reduce_sum_col soft_max layer_norm convert_bf16 rnd_unif rnd_dropout masked_fill
-RUN_OWN := ./own_tests.exe
+RUN_NCTEST := nctest.exe -d cpu
+RUN_MATMUL := matmul_test.exe -c 0 0 4 4 4 && matmul_test.exe -c 1 0 4 4 4 && matmul_test.exe -c 0 1 4 4 4
+RUN_NSPEED := ncspeed.exe -d cpu -n 10000 -w 64 add mul sum reduce_sum_sqr sigmoid reduce_sum_col soft_max layer_norm convert_bf16 rnd_unif rnd_dropout masked_fill
+RUN_OWN := own_tests.exe
 ALL_TARGETS := $(SHLIB) $(CUDA_LIB) $(TEST_BINS)
 else
 EXEEXT :=
@@ -80,5 +80,9 @@ else
 endif
 
 clean:
+ifeq ($(OS),Windows_NT)
+	powershell -NoProfile -Command "Remove-Item -Force -ErrorAction SilentlyContinue '$(SHLIB)','$(SHLIB_IMPLIB)','$(CUDA_LIB)','$(CUDA_IMPLIB)','nctest.exe','matmul_test.exe','ncspeed.exe','own_tests.exe'; Get-ChildItem -Filter '*.o' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue"
+else
 	rm -f $(SHLIB) $(TEST_BINS)
 	rm -f $(SHLIB_IMPLIB) $(CUDA_LIB) $(CUDA_IMPLIB) *.o
+endif
