@@ -2,6 +2,10 @@
 
 This document lists the exported symbols declared in `libnc.h`.
 
+Back to the documentation index: [libnc.md](./libnc.md)
+
+For the original-manual summary, see [manual.md](./manual.md).
+
 ## Contents
 
 - [5. Core types](#5-core-types)
@@ -22,6 +26,13 @@ Source notes:
 - public declarations: `libnc.h`
 - current implementation: `src/`
 - current status: [IMPLEMENTATION_CHECKLIST.md](https://github.com/Mashinow/libnc/blob/master/IMPLEMENTATION_CHECKLIST.md)
+
+This reference keeps the function order close to the public header. The tables use a simple three-column pattern:
+
+- `Function` - the exported symbol and signature
+- `Returns` - the nominal return type
+- `What it does` - the practical behavior of the API
+
 ## 5. Core types
 
 | Type | Meaning |

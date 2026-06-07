@@ -11,6 +11,8 @@ This folder contains the main documentation for the reconstructed project.
   - [Build and platform notes](manual.md#4-build-and-platform-notes)
 - [API reference](api_reference.md)
 
+This index is intentionally short. Use the two subdocuments for the actual manual and API reference, and come back here for navigation.
+
 ## Source notes
 
 - original manual: `doc/libnc.html` from the 2021 release

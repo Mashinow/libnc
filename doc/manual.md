@@ -2,6 +2,10 @@
 
 This document summarizes the original LibNC manual written by Fabrice Bellard.
 
+Back to the documentation index: [libnc.md](./libnc.md)
+
+For the exported API reference, see [api_reference.md](./api_reference.md).
+
 ## Contents
 
 - [1. What LibNC is](#1-what-libnc-is)
