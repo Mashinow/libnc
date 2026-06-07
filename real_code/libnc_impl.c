@@ -1344,7 +1344,6 @@ NCTensor *nc_reduce_sum(NCTensor *y0, NCTensor *x, int n_dims)
         return y0;
     }
     size_t y_total = tensor_numel(y0);
-    double acc[NC_N_DIMS_MAX] = {0};
     if (n_dims == 0) {
         double sum = 0.0;
         for (size_t i = 0; i < total; i++)
@@ -1355,6 +1354,9 @@ NCTensor *nc_reduce_sum(NCTensor *y0, NCTensor *x, int n_dims)
         (void)y_total;
         return y0;
     }
+    double *acc = nc_mallocz(sizeof(*acc) * y_total);
+    if (!acc)
+        nc_error("not enough memory");
     for (size_t i = 0; i < total; i++) {
         size_t yidx = i / collapse;
         float v = nc_load_f32((const uint8_t *)tensor_const_data_ptr(x) + i * x->item_size, x->item_type);
@@ -1362,6 +1364,7 @@ NCTensor *nc_reduce_sum(NCTensor *y0, NCTensor *x, int n_dims)
     }
     for (size_t i = 0; i < y_total; i++)
         nc_store_f32((uint8_t *)tensor_data_ptr(y0) + i * y0->item_size, y0->item_type, (float)acc[i]);
+    nc_free(acc);
     NCTensor *args[1] = { x };
     tensor_add_node(y0, NC_OP_REDUCE_SUM, 1, args);
     (void)y_total;
@@ -1618,10 +1621,10 @@ static NCTensor *matmul_2d_ex(NCTensor *w, NCTensor *x, BOOL w_trans, BOOL x_tra
 {
     if (w->n_dims != 2 || x->n_dims != 2)
         nc_error("matmul expects 2D tensors");
-    size_t wm = w_trans ? w->dims[1] : w->dims[0];
-    size_t wk = w_trans ? w->dims[0] : w->dims[1];
-    size_t xk = x_trans ? x->dims[1] : x->dims[0];
-    size_t xn = x_trans ? x->dims[0] : x->dims[1];
+    size_t wm = w_trans ? w->dims[0] : w->dims[1];
+    size_t wk = w_trans ? w->dims[1] : w->dims[0];
+    size_t xk = x_trans ? x->dims[0] : x->dims[1];
+    size_t xn = x_trans ? x->dims[1] : x->dims[0];
     if (wk != xk)
         nc_error("k == x->dims[0]");
     size_t out_dims[2] = { wm, xn };
@@ -1630,19 +1633,19 @@ static NCTensor *matmul_2d_ex(NCTensor *w, NCTensor *x, BOOL w_trans, BOOL x_tra
         nc_error("same_dims(y, x1)");
     if (!y0)
         tensor_fill_zero(y);
-    for (size_t i = 0; i < out_dims[0]; i++) {
-        for (size_t j = 0; j < out_dims[1]; j++) {
+    for (size_t row = 0; row < out_dims[1]; row++) {
+        for (size_t col = 0; col < out_dims[0]; col++) {
             float acc = 0.0f;
             for (size_t k = 0; k < wk; k++) {
-                size_t wi = (w_trans ? k * w->strides[0] + i * w->strides[1]
-                                     : i * w->strides[0] + k * w->strides[1]);
-                size_t xi = (x_trans ? j * x->strides[0] + k * x->strides[1]
-                                     : k * x->strides[0] + j * x->strides[1]);
+                size_t wi = (w_trans ? row * w->strides[0] + k * w->strides[1]
+                                     : k * w->strides[0] + row * w->strides[1]);
+                size_t xi = (x_trans ? k * x->strides[0] + col * x->strides[1]
+                                     : col * x->strides[0] + k * x->strides[1]);
                 float a = nc_load_f32((uint8_t *)tensor_const_data_ptr(w) + wi, w->item_type);
                 float b = nc_load_f32((uint8_t *)tensor_const_data_ptr(x) + xi, x->item_type);
                 acc += a * b;
             }
-            size_t yi = i * y->strides[0] + j * y->strides[1];
+            size_t yi = col * y->strides[0] + row * y->strides[1];
             float cur = nc_load_f32((uint8_t *)tensor_data_ptr(y) + yi, y->item_type);
             nc_store_f32((uint8_t *)tensor_data_ptr(y) + yi, y->item_type, cur + acc);
         }
@@ -1653,22 +1656,6 @@ static NCTensor *matmul_2d_ex(NCTensor *w, NCTensor *x, BOOL w_trans, BOOL x_tra
     } else {
         NCTensor *args[2] = { w, x };
         tensor_add_node(y, NC_OP_MATMUL, 2, args);
-    }
-    if (y->n_dims == 2) {
-        size_t rows = y->dims[0];
-        size_t cols = y->dims[1];
-        size_t total = rows * cols;
-        uint8_t *tmp = nc_malloc(total * y->item_size);
-        const uint8_t *src = tensor_const_data_ptr(y);
-        for (size_t r = 0; r < rows; r++) {
-            for (size_t c = 0; c < cols; c++) {
-                size_t src_off = (r * cols + c) * y->item_size;
-                size_t dst_off = (r + c * rows) * y->item_size;
-                memcpy(tmp + dst_off, src + src_off, y->item_size);
-            }
-        }
-        memcpy(tensor_data_ptr(y), tmp, total * y->item_size);
-        nc_free(tmp);
     }
     return y;
 }

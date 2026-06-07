@@ -2,6 +2,8 @@
 *.obj
 *.exe
 *.dll
+*.dll.a
+*.a
 *.lib
 *.pdb
 *.ilk
@@ -10,3 +12,4 @@
 tmp_*.bin
 test_*
 *.tmp
+matmul_test.txt
