@@ -53,13 +53,15 @@ static void backward_save_grad(void *opaque, NCTensor *g,
 }
 
 static BOOL tests_success = FALSE;
+static BOOL tests_success_printed = FALSE;
 static const char *current_stage = "startup";
 
 static void print_all_tests_success(void)
 {
-    if (tests_success) {
+    if (tests_success && !tests_success_printed) {
         fprintf(stderr, "all tests success\n");
         fflush(stderr);
+        tests_success_printed = TRUE;
     }
 }
 
@@ -804,5 +806,6 @@ int main(int argc, char **argv)
     nc_context_end(s);
     tests_success = TRUE;
     log_stage("completed");
+    print_all_tests_success();
     return 0;
 }
