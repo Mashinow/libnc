@@ -12,6 +12,8 @@
 #include <xmmintrin.h>
 #endif
 
+#include "libnc_internal.h"
+
 const char *nc_type_name_table[NC_TYPE_COUNT] = {
     "f32",
     "bf16",
@@ -107,146 +109,6 @@ void nc_fpu_init(void)
     _mm_setcsr(0x9FC0u);
 #endif
 }
-
-typedef enum {
-    NC_OP_NONE = 0,
-    NC_OP_PARAM,
-    NC_OP_STOP_GRAD,
-    NC_OP_ADD,
-    NC_OP_SUB,
-    NC_OP_MUL,
-    NC_OP_DIV,
-    NC_OP_NEG,
-    NC_OP_RECIP,
-    NC_OP_MIN,
-    NC_OP_MAX,
-    NC_OP_SELECT,
-    NC_OP_MASKED_FILL,
-    NC_OP_SIGMOID,
-    NC_OP_TANH,
-    NC_OP_RELU,
-    NC_OP_GELU,
-    NC_OP_LOG,
-    NC_OP_LSTM_CLAMPED,
-    NC_OP_LERP,
-    NC_OP_CONVERT,
-    NC_OP_RESHAPE,
-    NC_OP_REPEAT,
-    NC_OP_REDUCE_SUM,
-    NC_OP_REDUCE_SUM_SQR,
-    NC_OP_SLICE,
-    NC_OP_SLICE_ADD,
-    NC_OP_CONCAT,
-    NC_OP_PERMUTE,
-    NC_OP_MATMUL,
-    NC_OP_MATMUL_ADD,
-    NC_OP_GET_COL,
-    NC_OP_ADD_COL,
-    NC_OP_GET_ELEMENT,
-    NC_OP_ADD_ELEMENT,
-    NC_OP_SOFTMAX,
-    NC_OP_INDEXED_LOG,
-    NC_OP_LAYER_NORM,
-    NC_OP_RMS_NORM,
-    NC_OP_SLT_MAT_SET,
-    NC_OP_REL_SHIFT,
-    NC_OP_PAD,
-    NC_OP_TENSOR_COPY,
-} NCOp;
-
-struct NCContext;
-struct NCDevice;
-struct NCTensorBuffer;
-struct NCNode;
-
-typedef struct NCTensor {
-    struct list_head link;
-    int ref_count;
-    struct NCContext *context;
-    struct NCDevice *device;
-    struct NCTensorBuffer *buffer;
-    struct NCNode *node;
-    NCTypeEnum item_type;
-    size_t item_size;
-    int n_dims;
-    size_t dims[NC_N_DIMS_MAX];
-    size_t strides[NC_N_DIMS_MAX]; /* in bytes */
-    size_t n_elems;
-    size_t byte_offset;
-    BOOL is_contiguous;
-    char *name;
-} NCTensor;
-
-typedef struct NCTensorBuffer {
-    struct list_head link;
-    int ref_count;
-    struct NCDevice *device;
-    void *data;
-    size_t size;
-} NCTensorBuffer;
-
-typedef struct NCDevice {
-    struct list_head link;
-    struct NCContext *context;
-    char *name;
-    BOOL is_host;
-} NCDevice;
-
-typedef struct NCContext {
-    struct list_head devices;
-    struct list_head buffers;
-    struct list_head tensors;
-    struct list_head nodes;
-    int nb_threads;
-    size_t heap_size;
-    NCDevice *cpu_device;
-} NCContext;
-
-typedef struct NCNode {
-    struct list_head link;
-    int ref_count;
-    struct NCContext *context;
-    NCOp op;
-    const struct NCNode *parent;
-    int parent_arg_index;
-    int n_args;
-    NCTensor **args;
-    void *opaque;
-    int axis;
-    ssize_t start;
-    ssize_t end;
-    ssize_t value;
-    float fvalue;
-    BOOL bvalue;
-} NCNode;
-
-typedef struct NCRNDState {
-    struct list_head link;
-    NCDevice *device;
-    uint32_t state;
-} NCRNDState;
-
-typedef struct SGDOptVarState {
-    struct list_head link;
-    NCParam *param;
-    NCSGDOptState *owner;
-    float m;
-    float v;
-} SGDOptVarState;
-
-typedef struct NCSGDOptState {
-    struct list_head link;
-    NCContext *context;
-    SGDOptParams params;
-    struct list_head vars;
-} NCSGDOptState;
-
-static void context_track_node(NCContext *ctx, NCNode *n);
-static void context_track_device(NCContext *ctx, NCDevice *d);
-static inline size_t tensor_numel(const NCTensor *t);
-static inline void *tensor_data_ptr(const NCTensor *t);
-static inline const void *tensor_const_data_ptr(const NCTensor *t);
-void nc_node_set_parent(NCNode *n, int arg_index, const NCNode *n1);
 
 #include "libnc_device_helpers.c"
 #include "libnc_graph_helpers.c"
@@ -1728,51 +1590,57 @@ NCTensor *nc_transpose(NCTensor *x)
     return nc_permute(x, 2, axis);
 }
 
-static NCTensor *matmul_2d(NCTensor *w, NCTensor *x)
+static NCTensor *matmul_2d_ex(NCTensor *w, NCTensor *x, BOOL w_trans, BOOL x_trans, NCTensor *y0)
 {
     if (w->n_dims != 2 || x->n_dims != 2)
         nc_error("matmul expects 2D tensors");
-    if (w->dims[1] != x->dims[0])
+    size_t wm = w_trans ? w->dims[1] : w->dims[0];
+    size_t wk = w_trans ? w->dims[0] : w->dims[1];
+    size_t xk = x_trans ? x->dims[1] : x->dims[0];
+    size_t xn = x_trans ? x->dims[0] : x->dims[1];
+    if (wk != xk)
         nc_error("k == x->dims[0]");
-    size_t out_dims[2] = { w->dims[0], x->dims[1] };
-    NCTensor *y = nc_new_tensor(w->device, w->item_type, 2, out_dims);
+    size_t out_dims[2] = { wm, xn };
+    NCTensor *y = y0 ? nc_new_tensor_from_tensor(y0) : nc_new_tensor(w->device, w->item_type, 2, out_dims);
+    if (y->n_dims != 2 || y->dims[0] != out_dims[0] || y->dims[1] != out_dims[1])
+        nc_error("same_dims(y, x1)");
+    if (!y0)
+        tensor_fill_zero(y);
     for (size_t i = 0; i < out_dims[0]; i++) {
         for (size_t j = 0; j < out_dims[1]; j++) {
             float acc = 0.0f;
-            for (size_t k = 0; k < w->dims[1]; k++) {
-                size_t wi = i * w->strides[0] + k * w->strides[1];
-                size_t xi = k * x->strides[0] + j * x->strides[1];
+            for (size_t k = 0; k < wk; k++) {
+                size_t wi = (w_trans ? k * w->strides[0] + i * w->strides[1]
+                                     : i * w->strides[0] + k * w->strides[1]);
+                size_t xi = (x_trans ? j * x->strides[0] + k * x->strides[1]
+                                     : k * x->strides[0] + j * x->strides[1]);
                 float a = nc_load_f32((uint8_t *)tensor_const_data_ptr(w) + wi, w->item_type);
                 float b = nc_load_f32((uint8_t *)tensor_const_data_ptr(x) + xi, x->item_type);
                 acc += a * b;
             }
             size_t yi = i * y->strides[0] + j * y->strides[1];
-            nc_store_f32((uint8_t *)tensor_data_ptr(y) + yi, y->item_type, acc);
+            float cur = nc_load_f32((uint8_t *)tensor_data_ptr(y) + yi, y->item_type);
+            nc_store_f32((uint8_t *)tensor_data_ptr(y) + yi, y->item_type, cur + acc);
         }
     }
-    NCTensor *args[2] = { w, x };
-    tensor_add_node(y, NC_OP_MATMUL, 2, args);
+    if (y0) {
+        NCTensor *args[3] = { w, x, y0 };
+        tensor_add_node(y, NC_OP_MATMUL_ADD, 3, args);
+    } else {
+        NCTensor *args[2] = { w, x };
+        tensor_add_node(y, NC_OP_MATMUL, 2, args);
+    }
     return y;
 }
 
 NCTensor *nc_matmul(NCTensor *w, NCTensor *x)
 {
-    return matmul_2d(w, x);
+    return matmul_2d_ex(w, x, FALSE, FALSE, NULL);
 }
 
 NCTensor *nc_matmul_add(NCTensor *w, NCTensor *x, NCTensor *y0, BOOL w_trans, BOOL x_trans)
 {
-    if (w_trans || x_trans)
-        nc_error("transposed matmul is not supported in this simplified build");
-    NCTensor *y = nc_matmul(w, x);
-    if (y0) {
-        NCTensor *sum = nc_add(y, y0);
-        nc_free_tensor(y);
-        y = sum;
-    }
-    NCTensor *args[3] = { w, x, y0 };
-    tensor_add_node(y, NC_OP_MATMUL_ADD, 3, args);
-    return y;
+    return matmul_2d_ex(w, x, w_trans, x_trans, y0);
 }
 
 NCTensor *nc_matmul_stride(NCTensor *w, NCTensor *x)
@@ -2423,6 +2291,8 @@ void nc_sgd_opt_set_all(NCParamList *param_list, NCSGDOptState *s)
 void nc_sgd_opt_set(NCParam *x, NCSGDOptState *s)
 {
     if (!x)
+        return;
+    if (x->sgd_opt && x->sgd_opt->owner == s)
         return;
     if (!s) {
         if (x->sgd_opt) {
