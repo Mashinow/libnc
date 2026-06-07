@@ -365,6 +365,24 @@ static void dump_header(BOOL check_result)
            "TYPE", "TA", "TB", "M", "N", "K", "COUNT", "Flops", "REF");
 }
 
+static BOOL tests_success = FALSE;
+static const char *current_stage = "startup";
+
+static void print_all_tests_success(void)
+{
+    if (tests_success) {
+        fprintf(stderr, "all tests success\n");
+        fflush(stderr);
+    }
+}
+
+static void log_stage(const char *stage)
+{
+    current_stage = stage;
+    fprintf(stderr, "[matmul_test] %s\n", stage);
+    fflush(stderr);
+}
+
 void bench(BOOL check_result, const char *save_filename,
            const char *ref_filename,
            const MatMulParams *params_tab, int params_count,
@@ -398,6 +416,12 @@ void bench(BOOL check_result, const char *save_filename,
         f = NULL;
     }
 
+    {
+        char stage_buf[128];
+        snprintf(stage_buf, sizeof(stage_buf), "bench_start device=%s params=%d",
+                 device_name, params_count);
+        log_stage(stage_buf);
+    }
     s = nc_context_init(nb_threads);
     d = nc_new_device(s, device_name);
     if (!d) {
@@ -408,6 +432,14 @@ void bench(BOOL check_result, const char *save_filename,
     dump_header(check_result);
     for(i = 0; i < params_count; i++) {
         mp = &params_tab[i];
+        {
+            char stage_buf[256];
+            snprintf(stage_buf, sizeof(stage_buf),
+                     "mat_profile idx=%d a_trans=%d b_trans=%d m=%d n=%d k=%d count=%d type=%s",
+                     i, mp->a_trans, mp->b_trans, mp->m, mp->n, mp->k,
+                     mp->mat_count, nc_type_name_table[mp->type]);
+            log_stage(stage_buf);
+        }
         mat_profile(s, d, &res, mp->a_trans, mp->b_trans, mp->m, mp->n, mp->k,
                     mp->mat_count, mp->type, check_result);
         if (f) {
@@ -448,6 +480,7 @@ void bench(BOOL check_result, const char *save_filename,
         fclose(f);
     }
 
+    log_stage("bench_end");
     free(r_tab);
     nc_context_end(s);
 }
@@ -495,7 +528,10 @@ int main(int argc, char **argv)
             exit(1);
         }
     }
+    atexit(print_all_tests_success);
+    setvbuf(stderr, NULL, _IONBF, 0);
     if ((argc - optind) < 5) {
+        log_stage("main_default_bench");
         bench(check_result, "matmul_test.txt", ref_filename,
               matmul_params, countof(matmul_params),
               device_name, nb_threads);
@@ -521,7 +557,10 @@ int main(int argc, char **argv)
                 exit(1);
             }
         }
+        log_stage("main_single_bench");
         bench(check_result, NULL, ref_filename, mp, 1, device_name, nb_threads);
     }
+    tests_success = TRUE;
+    log_stage("completed");
     return 0;
 }

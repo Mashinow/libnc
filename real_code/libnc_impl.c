@@ -1433,6 +1433,10 @@ NCTensor *nc_slice_add(NCTensor *y0, NCTensor *x, int axis, size_t start)
     }
     NCTensor *args[2] = { y0, x };
     tensor_add_node(y0, NC_OP_SLICE_ADD, 2, args);
+    if (y0->node) {
+        y0->node->axis = axis;
+        y0->node->start = (ssize_t)start;
+    }
     return y0;
 }
 
@@ -1472,6 +1476,8 @@ NCTensor *nc_concat(NCTensor **inputs, int n_inputs, int axis)
     for (int i = 0; i < n_inputs; i++)
         args[i] = inputs[i];
     tensor_add_node(y, NC_OP_CONCAT, n_inputs, args);
+    if (y->node)
+        y->node->axis = axis;
     nc_free(args);
     return y;
 }
@@ -1700,6 +1706,10 @@ static NCTensor *matmul_2d_ex(NCTensor *w, NCTensor *x, BOOL w_trans, BOOL x_tra
     if (y0) {
         NCTensor *args[3] = { w, x, y0 };
         tensor_add_node(y, NC_OP_MATMUL_ADD, 3, args);
+        if (y->node) {
+            y->node->bvalue = w_trans;
+            y->node->value = x_trans ? 1.0f : 0.0f;
+        }
     } else {
         NCTensor *args[2] = { w, x };
         tensor_add_node(y, NC_OP_MATMUL, 2, args);
@@ -2082,6 +2092,22 @@ static NCTensor *tensor_scaled_like(const NCTensor *a, float scale)
     return y;
 }
 
+static void backward_clear_saved_grads(NCTensor *x)
+{
+    if (!x || !x->node)
+        return;
+    if (x->node->op == NC_OP_PARAM) {
+        NCParam *p = x->node->opaque;
+        if (p && p->saved_grad) {
+            nc_free_tensor(p->saved_grad);
+            p->saved_grad = NULL;
+        }
+        return;
+    }
+    for (int i = 0; i < x->node->n_args; i++)
+        backward_clear_saved_grads(x->node->args[i]);
+}
+
 static void backward_tensor(NCTensor *x, NCTensor *grad, NCParamUpdateFunc *param_update_func, int flags)
 {
     if (!x || !grad)
@@ -2090,11 +2116,33 @@ static void backward_tensor(NCTensor *x, NCTensor *grad, NCParamUpdateFunc *para
         nc_free_tensor(grad);
         return;
     }
+    BOOL keep_grad_graph = (flags & NC_BW_KEEP_GRAD_GRAPH) != 0;
 
     switch (x->node->op) {
     case NC_OP_PARAM:
-        if (param_update_func)
+        if (x->node->opaque) {
+            NCParam *p = x->node->opaque;
+            if (p->saved_grad) {
+                if (keep_grad_graph) {
+                    NCTensor *sum = nc_add(nc_dup_tensor(p->saved_grad), grad);
+                    if (param_update_func) {
+                        sum->ref_count++;
+                        param_update_func(p, sum, NULL);
+                    }
+                    nc_free_tensor(sum);
+                } else {
+                    tensor_add_inplace(p->saved_grad, grad);
+                    if (param_update_func)
+                        param_update_func(p, p->saved_grad, NULL);
+                }
+                nc_free_tensor(grad);
+                return;
+            }
+        }
+        if (param_update_func) {
+            grad->ref_count++;
             param_update_func(x->node->opaque, grad, NULL);
+        }
         nc_free_tensor(grad);
         return;
     case NC_OP_STOP_GRAD:
@@ -2112,12 +2160,21 @@ static void backward_tensor(NCTensor *x, NCTensor *grad, NCParamUpdateFunc *para
         return;
     }
     case NC_OP_NEG:
+        if (keep_grad_graph) {
+            backward_tensor(x->node->args[0], nc_neg(grad), param_update_func, flags);
+            return;
+        }
         tensor_scale_inplace(grad, -1.0f);
         backward_tensor(x->node->args[0], grad, param_update_func, flags);
         return;
     case NC_OP_MUL:
-        backward_tensor(x->node->args[0], tensor_mul_like(grad, x->node->args[1]), param_update_func, flags);
-        backward_tensor(x->node->args[1], tensor_mul_like(grad, x->node->args[0]), param_update_func, flags);
+        if (keep_grad_graph) {
+            backward_tensor(x->node->args[0], nc_mul(grad, nc_dup_tensor(x->node->args[1])), param_update_func, flags);
+            backward_tensor(x->node->args[1], nc_mul(nc_dup_tensor(grad), nc_dup_tensor(x->node->args[0])), param_update_func, flags);
+        } else {
+            backward_tensor(x->node->args[0], tensor_mul_like(grad, x->node->args[1]), param_update_func, flags);
+            backward_tensor(x->node->args[1], tensor_mul_like(grad, x->node->args[0]), param_update_func, flags);
+        }
         nc_free_tensor(grad);
         return;
     case NC_OP_DIV: {
@@ -2327,6 +2384,15 @@ static void backward_tensor(NCTensor *x, NCTensor *grad, NCParamUpdateFunc *para
     case NC_OP_REPEAT:
         backward_tensor(x->node->args[0], nc_reduce_sum(NULL, grad, x->node->args[0]->n_dims), param_update_func, flags);
         return;
+    case NC_OP_SLICE_ADD: {
+        NCTensor *dst = x->node->args[0];
+        NCTensor *src = x->node->args[1];
+        int axis = x->node->axis;
+        size_t start = (size_t)x->node->start;
+        backward_tensor(dst, nc_dup_tensor(grad), param_update_func, flags);
+        backward_tensor(src, nc_slice(grad, axis, start, start + src->dims[axis]), param_update_func, flags);
+        return;
+    }
     case NC_OP_SLICE: {
         NCTensor *src = x->node->args[0];
         NCTensor *g0 = nc_new_tensor_nz(src->device, src->item_type, src->n_dims, src->dims);
@@ -2335,6 +2401,18 @@ static void backward_tensor(NCTensor *x, NCTensor *grad, NCParamUpdateFunc *para
         nc_tensor_copy(sl, grad);
         nc_free_tensor(sl);
         backward_tensor(src, g0, param_update_func, flags);
+        nc_free_tensor(grad);
+        return;
+    }
+    case NC_OP_CONCAT: {
+        int axis = x->node->axis;
+        size_t cursor = 0;
+        for (int i = 0; i < x->node->n_args; i++) {
+            NCTensor *arg = x->node->args[i];
+            size_t len = arg->dims[axis];
+            backward_tensor(arg, nc_slice(grad, axis, cursor, cursor + len), param_update_func, flags);
+            cursor += len;
+        }
         nc_free_tensor(grad);
         return;
     }
@@ -2355,6 +2433,51 @@ static void backward_tensor(NCTensor *x, NCTensor *grad, NCParamUpdateFunc *para
         NCTensor *in = x->node->args[1];
         backward_tensor(w, nc_matmul(grad, nc_transpose(nc_dup_tensor(in))), param_update_func, flags);
         backward_tensor(in, nc_matmul(nc_transpose(nc_dup_tensor(w)), grad), param_update_func, flags);
+        return;
+    }
+    case NC_OP_MATMUL_ADD: {
+        NCTensor *w = x->node->args[0];
+        NCTensor *in = x->node->args[1];
+        NCTensor *y0 = x->node->args[2];
+        BOOL w_trans = x->node->bvalue;
+        BOOL x_trans = x->node->value != 0.0f;
+        NCTensor *gw = NULL;
+        NCTensor *gx = NULL;
+        if (!w_trans && !x_trans) {
+            NCTensor *in_t = nc_transpose(nc_dup_tensor(in));
+            gw = nc_matmul(grad, in_t);
+            nc_free_tensor(in_t);
+            NCTensor *w_t = nc_transpose(nc_dup_tensor(w));
+            gx = nc_matmul(w_t, grad);
+            nc_free_tensor(w_t);
+        } else if (w_trans && !x_trans) {
+            NCTensor *g_t = nc_transpose(nc_dup_tensor(grad));
+            gw = nc_matmul(in, g_t);
+            nc_free_tensor(g_t);
+            gx = nc_matmul(w, grad);
+        } else if (!w_trans && x_trans) {
+            gw = nc_matmul(grad, in);
+            NCTensor *w_t = nc_transpose(nc_dup_tensor(w));
+            NCTensor *g_t = nc_transpose(nc_dup_tensor(grad));
+            gx = nc_matmul(g_t, w_t);
+            nc_free_tensor(w_t);
+            nc_free_tensor(g_t);
+        } else {
+            NCTensor *in_t = nc_transpose(nc_dup_tensor(in));
+            NCTensor *g_t = nc_transpose(nc_dup_tensor(grad));
+            gw = nc_matmul(in_t, g_t);
+            nc_free_tensor(in_t);
+            nc_free_tensor(g_t);
+            NCTensor *w_t = nc_transpose(nc_dup_tensor(w));
+            NCTensor *g2_t = nc_transpose(nc_dup_tensor(grad));
+            gx = nc_matmul(g2_t, w_t);
+            nc_free_tensor(w_t);
+            nc_free_tensor(g2_t);
+        }
+        backward_tensor(w, gw, param_update_func, flags);
+        backward_tensor(in, gx, param_update_func, flags);
+        backward_tensor(y0, nc_dup_tensor(grad), param_update_func, flags);
+        nc_free_tensor(grad);
         return;
     }
     case NC_OP_GET_COL: {
@@ -2619,6 +2742,7 @@ void nc_backward(const NCTensor *x, NCTensor *grad, NCParamUpdateFunc *param_upd
         grad = nc_new_scalar(x->device, x->item_type);
         nc_tensor_set_f32(grad, 1.0f);
     }
+    backward_clear_saved_grads((NCTensor *)x);
     backward_tensor((NCTensor *)x, grad, param_update_func, flags);
 }
 
@@ -2635,7 +2759,7 @@ void nc_dump_graph(NCTensor *x)
 void nc_param_list_init(NCParamList *pl)
 {
     init_list_head(&pl->param_list);
-    pl->add_graph = FALSE;
+    pl->add_graph = TRUE;
 }
 
 void nc_param_list_set_graph(NCParamList *pl, BOOL add_graph)
@@ -2650,6 +2774,8 @@ NCParam *nc_new_param_str(NCParamList *pl, NCTensor **pval, const char *str)
     p->name = nc_strdup(str);
     init_list_head(&p->link);
     list_add_tail(&p->link, &pl->param_list);
+    if (pl->add_graph)
+        *pval = nc_set_param(*pval, p);
     return p;
 }
 

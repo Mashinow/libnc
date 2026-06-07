@@ -232,6 +232,9 @@ static void check_op(NCContext *s, NCDevice *device,
 
 
 static BOOL header_disp;
+static BOOL tests_success = FALSE;
+static const char *current_stage = "startup";
+static void log_stage(const char *stage);
 
 static void nc_test_op_type(NCContext *s, NCDevice *d, NCTestOp op,
                             NCTypeEnum arg_type,
@@ -242,7 +245,11 @@ static void nc_test_op_type(NCContext *s, NCDevice *d, NCTestOp op,
     int64_t ti, ti1;
     NCRNDState *rnd_state;
     double gop_per_sec;
+    char stage_buf[128];
     
+    snprintf(stage_buf, sizeof(stage_buf), "op=%s type=%s start",
+             test_op_def[op].name, nc_type_name_table[arg_type]);
+    log_stage(stage_buf);
     if (!header_disp) {
         header_disp = TRUE;
         printf("N=%d W=%d\n", n, w);
@@ -327,17 +334,40 @@ static void nc_test_op_type(NCContext *s, NCDevice *d, NCTestOp op,
            gop_per_sec * test_op_def[op].ops_per_element,
            gop_per_sec * test_op_def[op].mem_per_element *
            nc_type_size_table[arg_type]);
+    snprintf(stage_buf, sizeof(stage_buf), "op=%s type=%s done",
+             test_op_def[op].name, nc_type_name_table[arg_type]);
+    log_stage(stage_buf);
 }
 
 static void nc_test_op(NCContext *s, NCDevice *d, NCTestOp op,
                        int n, int w)
 {
     int type;
+    char stage_buf[96];
+    snprintf(stage_buf, sizeof(stage_buf), "op=%s begin", test_op_def[op].name);
+    log_stage(stage_buf);
     for(type = 0; type < NC_TYPE_COUNT; type++) {
         if (test_op_def[op].type_mask & (1 << type)) {
             nc_test_op_type(s, d, op, type, n, w);
         }
     }
+    snprintf(stage_buf, sizeof(stage_buf), "op=%s end", test_op_def[op].name);
+    log_stage(stage_buf);
+}
+
+static void print_all_tests_success(void)
+{
+    if (tests_success) {
+        fprintf(stderr, "all tests success\n");
+        fflush(stderr);
+    }
+}
+
+static void log_stage(const char *stage)
+{
+    current_stage = stage;
+    fprintf(stderr, "[ncspeed] %s\n", stage);
+    fflush(stderr);
 }
 
 void help(void)
@@ -381,6 +411,8 @@ int main(int argc, char **argv)
             exit(1);
         }
     }
+    atexit(print_all_tests_success);
+    setvbuf(stderr, NULL, _IONBF, 0);
 
     s = nc_context_init(1);
     dev = nc_new_device(s, device_name);
@@ -404,5 +436,7 @@ int main(int argc, char **argv)
         }
     }
     nc_context_end(s);
+    tests_success = TRUE;
+    log_stage("completed");
     return 0;
 }

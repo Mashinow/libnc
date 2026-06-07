@@ -45,7 +45,29 @@ static void backward_save_grad(void *opaque, NCTensor *g,
         snprintf(buf, sizeof(buf), "dy/d%s", p->name);
         nc_dump_tensor(buf, g, 0);
     }
+    fprintf(stderr, "[nctest] save_grad %s\n", p->name);
+    fflush(stderr);
     p->saved_grad = g;
+    fprintf(stderr, "[nctest] saved_grad %s ok\n", p->name);
+    fflush(stderr);
+}
+
+static BOOL tests_success = FALSE;
+static const char *current_stage = "startup";
+
+static void print_all_tests_success(void)
+{
+    if (tests_success) {
+        fprintf(stderr, "all tests success\n");
+        fflush(stderr);
+    }
+}
+
+static void log_stage(const char *stage)
+{
+    current_stage = stage;
+    fprintf(stderr, "[nctest] %s\n", stage);
+    fflush(stderr);
 }
 
 static __unused void nc_test_backward_scalar(NCContext *s, NCDevice *d,
@@ -63,6 +85,11 @@ static __unused void nc_test_backward_scalar(NCContext *s, NCDevice *d,
     param_x2 = nc_new_param(&param_list, &x2, "x2");
 
     for(i = 0; i < 2; i++) {
+        {
+            char stage_buf[128];
+            snprintf(stage_buf, sizeof(stage_buf), "backward_scalar iter=%d set_inputs", i);
+            log_stage(stage_buf);
+        }
         nc_tensor_set_f32(x1, (float)i + 3);
         nc_tensor_set_f32(x2, (float)i + 1);
         //        nc_dump_tensor("x1", x1, 0);
@@ -77,7 +104,9 @@ static __unused void nc_test_backward_scalar(NCContext *s, NCDevice *d,
             flags = NC_BW_KEEP_GRAD_GRAPH;
         else
             flags = 0;
+        log_stage("backward_scalar before nc_backward");
         nc_backward(y, nc_new_f32(d, 1.0), backward_save_grad, flags);
+        log_stage("backward_scalar after nc_backward");
         
         /* y = x1^2 + x1 * x2
 
@@ -100,6 +129,7 @@ static __unused void nc_test_backward_scalar(NCContext *s, NCDevice *d,
         /* check the gradient */
         {
             float g1, expected_g1;
+            log_stage("backward_scalar check_grad_x1");
             g1 = nc_get_scalar_f32(param_x1->saved_grad);
             expected_g1 = 2 * nc_get_scalar_f32(x1) +
                 nc_get_scalar_f32(x2);
@@ -108,18 +138,21 @@ static __unused void nc_test_backward_scalar(NCContext *s, NCDevice *d,
                 exit(1);
             }
             
+            log_stage("backward_scalar check_grad_x2");
             g1 = nc_get_scalar_f32(param_x2->saved_grad);
             expected_g1 = nc_get_scalar_f32(x1);
             if (g1 != expected_g1) {
                 printf("ERROR: g2=%g expected=%g\n", g1, expected_g1);
                 exit(1);
             }
+            log_stage("backward_scalar grad_ok");
         }
 
         if (test_hessian_product) {
             NCTensor *g, *tab[2], *v;
             
             /* build the gradient vector: g = [ dy/dx1 dy/dx2 ] */
+            log_stage("backward_scalar build_hessian_input");
             tab[0] = nc_reshape_1d(param_x1->saved_grad, 1);
             tab[1] = nc_reshape_1d(param_x2->saved_grad, 1);
             g = nc_vconcat(tab, 2);
@@ -127,10 +160,12 @@ static __unused void nc_test_backward_scalar(NCContext *s, NCDevice *d,
             //            nc_dump_graph(g);
             
             /* compute the hessian vector product */
+            log_stage("backward_scalar before hvp");
             v = nc_new_tensor_1d(d, NC_TYPE_F32, 2);
             nc_tensor_set_f32(v, 1.0);
             
             nc_backward(g, v, backward_save_grad, 0);
+            log_stage("backward_scalar after hvp");
 
             nc_free_tensor(g);
 
@@ -138,18 +173,21 @@ static __unused void nc_test_backward_scalar(NCContext *s, NCDevice *d,
             {
                 float hv1, expected_hv1;
                 
+                log_stage("backward_scalar hvp_check_x1");
                 hv1 = nc_get_scalar_f32(param_x1->saved_grad);
                 expected_hv1 = 3;
                 if (hv1 != expected_hv1) {
                     printf("ERROR: hv1=%g expected=%f\n", hv1, expected_hv1);
                     exit(1);
                 }
+                log_stage("backward_scalar hvp_check_x2");
                 hv1 = nc_get_scalar_f32(param_x2->saved_grad);
                 expected_hv1 = 1;
                 if (hv1 != expected_hv1) {
                     printf("ERROR: hv2=%g expected=%f\n", hv1, expected_hv1);
                     exit(1);
                 }
+                log_stage("backward_scalar hvp_ok");
             }
         }
         nc_free_tensor(param_x1->saved_grad);
@@ -158,6 +196,7 @@ static __unused void nc_test_backward_scalar(NCContext *s, NCDevice *d,
         param_x2->saved_grad = NULL;
         
         nc_free_tensor(y);
+        log_stage("backward_scalar iter_done");
     }
     nc_param_list_end(&param_list);
 }
@@ -741,19 +780,29 @@ int main(int argc, char **argv)
         }
     }
 
+    atexit(print_all_tests_success);
+    setvbuf(stderr, NULL, _IONBF, 0);
+    log_stage("init_context");
     s = nc_context_init(1);
+    log_stage("create_device");
     dev = nc_new_device(s, device_name);
     if (!dev) {
         fprintf(stderr, "Device %s is not available\n", device_name);
         exit(1);
     }
     
+    log_stage("basic_test");
     nc_basic_test(s, dev);
     if (!strcmp(device_name, "cpu")) {
+        log_stage("backward_scalar");
         nc_test_backward_scalar(s, dev, TRUE);
     }
+    log_stage("approx_gradient");
     nc_test_approx_gradient(s, dev, verbose);
     
+    log_stage("end_context");
     nc_context_end(s);
+    tests_success = TRUE;
+    log_stage("completed");
     return 0;
 }

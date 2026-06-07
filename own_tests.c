@@ -767,24 +767,57 @@ static void test_misc(void)
     nc_free(tab);
 }
 
+static BOOL tests_success = FALSE;
+static const char *current_stage = "startup";
+
+static void print_all_tests_success(void)
+{
+    if (tests_success) {
+        fprintf(stderr, "all tests success\n");
+        fflush(stderr);
+    }
+}
+
+static void log_stage(const char *stage)
+{
+    current_stage = stage;
+    fprintf(stderr, "[own_tests] %s\n", stage);
+    fflush(stderr);
+}
+
 int main(void)
 {
+    atexit(print_all_tests_success);
+    setvbuf(stderr, NULL, _IONBF, 0);
+    log_stage("init_context");
     NCContext *ctx = nc_context_init(1);
+    log_stage("create_devices");
     NCDevice *cpu = nc_new_cpu_device(ctx);
     NCDevice *cuda = nc_new_device(ctx, "cuda:0");
     check(ctx != NULL && cpu != NULL && cuda != NULL, "context/devices");
 
+    log_stage("runtime");
     test_runtime(ctx);
+    log_stage("devices_and_buffers");
     test_devices_and_buffers(ctx, cpu);
+    log_stage("tensor_basics");
     test_tensor_basics(ctx, cpu, cuda);
+    log_stage("elementwise");
     test_elementwise(cpu);
+    log_stage("layout_and_shape");
     test_layout_and_shape(cpu);
+    log_stage("linear_algebra_and_indexed");
     test_linear_algebra_and_indexed(cpu);
+    log_stage("graph_helpers_and_backward");
     test_graph_helpers_and_backward(ctx, cpu);
+    log_stage("params_and_sgd");
     test_params_and_sgd(ctx, cpu);
+    log_stage("misc");
     test_misc();
 
+    log_stage("end_context");
     nc_context_end(ctx);
-    puts("own_tests: OK");
+    tests_success = TRUE;
+    log_stage("completed");
     return 0;
 }
