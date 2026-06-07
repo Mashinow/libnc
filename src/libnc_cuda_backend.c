@@ -344,7 +344,9 @@ static int cuda_load_fns(NCCudaFns *f)
     return 1;
 }
 
-static const char *cuda_kernel_source =
+static const char *cuda_kernel_source(void)
+{
+    return
 "extern \"C\" __global__ void nc_cuda_binary_f32(int op, const float *a, const float *b, float *y, size_t n)\n"
 "{\n"
 "    size_t i = (size_t)blockIdx.x * (size_t)blockDim.x + (size_t)threadIdx.x;\n"
@@ -650,6 +652,7 @@ static const char *cuda_kernel_source =
 "        y[row * inner + i] = v * invstd;\n"
 "    }\n"
 "}\n";
+}
 
 static int cuda_compile_kernels(NCCudaState *s)
 {
@@ -660,7 +663,7 @@ static int cuda_compile_kernels(NCCudaState *s)
     size_t ptx_size = 0;
     char *ptx = NULL;
 
-    if (s->fns.nvrtcCreateProgram(&prog, cuda_kernel_source, "libnc_cuda_kernels.cu", 0, NULL, NULL) != 0)
+    if (s->fns.nvrtcCreateProgram(&prog, cuda_kernel_source(), "libnc_cuda_kernels.cu", 0, NULL, NULL) != 0)
         return 0;
     if (s->fns.nvrtcCompileProgram(prog, 2, opts) != 0) {
         if (s->fns.nvrtcGetProgramLogSize(prog, &log_size) == 0 && log_size > 1) {
