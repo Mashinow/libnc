@@ -13,6 +13,7 @@
 #endif
 
 #include "libnc_internal.h"
+#include "libnc_parallel.c"
 #include "libnc_device_helpers.c"
 #include "libnc_graph_helpers.c"
 #include "libnc_param_io.c"
@@ -626,6 +627,8 @@ NCContext *nc_context_init(int nb_threads)
     init_list_head(&ctx->buffers);
     init_list_head(&ctx->tensors);
     init_list_head(&ctx->nodes);
+    if (nb_threads < 1)
+        nb_threads = 1;
     ctx->nb_threads = nb_threads;
     ctx->cpu_device = nc_mallocz(sizeof(*ctx->cpu_device));
     ctx->cpu_device->context = ctx;
@@ -633,6 +636,9 @@ NCContext *nc_context_init(int nb_threads)
     ctx->cpu_device->is_host = TRUE;
     context_track_device(ctx, ctx->cpu_device);
     nc_fpu_init();
+    ctx->parallel = nc_parallel_state_create(ctx->nb_threads);
+    if (ctx->parallel)
+        nc_parallel_state_start(ctx, ctx->parallel);
     return ctx;
 }
 
@@ -640,6 +646,8 @@ void nc_context_end(NCContext *ctx)
 {
     if (!ctx)
         return;
+    nc_parallel_state_end(ctx->parallel);
+    ctx->parallel = NULL;
     while (!list_empty(&ctx->tensors)) {
         struct list_head *el = ctx->tensors.next;
         NCTensor *t = list_entry(el, NCTensor, link);
@@ -1056,10 +1064,140 @@ static float rnd_float(NCRNDState *s)
     return (rnd_u32(s) >> 8) * (1.0f / 16777216.0f);
 }
 
+struct NCPointwiseUnaryRangeCtx {
+    const NCTensor *src;
+    NCTensor *dst;
+    float (*fn)(float, void *);
+    void *opaque;
+};
+
+struct NCPointwiseBinaryRangeCtx {
+    const NCTensor *a;
+    const NCTensor *b;
+    NCTensor *dst;
+    float (*fn)(float, float, void *);
+    void *opaque;
+};
+
+struct NCTensorCopyRangeCtx {
+    const NCTensor *src;
+    NCTensor *dst;
+};
+
+struct NCTensorConvertRangeCtx {
+    const NCTensor *src;
+    NCTensor *dst;
+};
+
+struct NCMaskedFillRangeCtx {
+    const NCTensor *x;
+    const NCTensor *mask;
+    NCTensor *dst;
+    float c;
+    BOOL mask_inv;
+};
+
+struct NCRndUnifRangeCtx {
+    NCTensor *dst;
+    const uint32_t *tab;
+    size_t tab_span;
+    size_t base_index;
+    float avg;
+    float range;
+};
+
+struct NCRndDropoutRangeCtx {
+    NCTensor *dst;
+    const uint32_t *tab;
+    size_t tab_span;
+    size_t base_index;
+    float prob;
+    float scale;
+};
+
+struct NCSoftMaxRangeCtx {
+    const NCTensor *x;
+    NCTensor *y;
+    size_t inner;
+    int axis;
+};
+
+struct NCLayerNormRangeCtx {
+    const NCTensor *x;
+    NCTensor *y;
+    NCTensor *aux;
+    size_t inner;
+    int axis;
+    BOOL rms;
+    float eps;
+};
+
+struct NCReduceSumRangeCtx {
+    const NCTensor *x;
+    NCTensor *y0;
+    size_t collapse;
+    size_t y_total;
+    int n_dims;
+};
+
+struct NCReduceSumScalarRangeCtx {
+    double *partials;
+    size_t chunk;
+    const NCTensor *x;
+};
+
+struct NCReduceSumSqrScalarRangeCtx {
+    double *partials;
+    size_t chunk;
+    const NCTensor *x;
+};
+
+typedef struct NCPointwiseUnaryRangeCtx NCPointwiseUnaryRangeCtx;
+typedef struct NCPointwiseBinaryRangeCtx NCPointwiseBinaryRangeCtx;
+typedef struct NCTensorCopyRangeCtx NCTensorCopyRangeCtx;
+typedef struct NCTensorConvertRangeCtx NCTensorConvertRangeCtx;
+typedef struct NCMaskedFillRangeCtx NCMaskedFillRangeCtx;
+typedef struct NCRndUnifRangeCtx NCRndUnifRangeCtx;
+typedef struct NCRndDropoutRangeCtx NCRndDropoutRangeCtx;
+typedef struct NCSoftMaxRangeCtx NCSoftMaxRangeCtx;
+typedef struct NCLayerNormRangeCtx NCLayerNormRangeCtx;
+typedef struct NCReduceSumRangeCtx NCReduceSumRangeCtx;
+typedef struct NCReduceSumScalarRangeCtx NCReduceSumScalarRangeCtx;
+typedef struct NCReduceSumSqrScalarRangeCtx NCReduceSumSqrScalarRangeCtx;
+
+static void tensor_copy_range_worker(void *opaque, size_t start, size_t end);
+static void tensor_convert_range_worker(void *opaque, size_t start, size_t end);
+static void tensor_unary_range_worker(void *opaque, size_t start, size_t end);
+static void tensor_binary_range_worker(void *opaque, size_t start, size_t end);
+static void masked_fill_range_worker(void *opaque, size_t start, size_t end);
+static void rnd_unif_range_worker(void *opaque, size_t start, size_t end);
+static void rnd_dropout_range_worker(void *opaque, size_t start, size_t end);
+static void soft_max_range_worker(void *opaque, size_t start, size_t end);
+static void layer_norm_range_worker(void *opaque, size_t start, size_t end);
+static void reduce_sum_range_worker(void *opaque, size_t start, size_t end);
+static void reduce_sum_scalar_range_worker(void *opaque, size_t start, size_t end);
+static void reduce_sum_sqr_scalar_range_worker(void *opaque, size_t start, size_t end);
+
 void nc_tensor_set_rnd_unif(NCTensor *y, float avg, float range, NCRNDState *rnd_state)
 {
     size_t total = tensor_numel(y);
     uint8_t *base = tensor_data_ptr(y);
+    if (rnd_state && rnd_state->tab && y->context && y->context->parallel &&
+        y->context->parallel->n_threads > 1 && total >= 8192 && y->is_contiguous) {
+        size_t tab_span = rnd_state->tab_len * 6;
+        size_t base_index = rnd_state->tab_index;
+        NCRndUnifRangeCtx ctx = {
+            .dst = y,
+            .tab = rnd_state->tab,
+            .tab_span = tab_span,
+            .base_index = base_index,
+            .avg = avg,
+            .range = range,
+        };
+        nc_parallel_for(y->context, total, 4096, rnd_unif_range_worker, &ctx);
+        rnd_state->tab_index = (base_index + total) % tab_span;
+        return;
+    }
     for (size_t i = 0; i < total; i++) {
         float v = avg + (rnd_float(rnd_state) * 2.0f - 1.0f) * range;
         nc_store_f32(base + i * y->item_size, y->item_type, v);
@@ -1071,6 +1209,22 @@ void nc_tensor_set_dropout(NCTensor *y, float prob, NCRNDState *rnd_state)
     size_t total = tensor_numel(y);
     uint8_t *base = tensor_data_ptr(y);
     float scale = prob < 1.0f ? 1.0f / (1.0f - prob) : 0.0f;
+    if (rnd_state && rnd_state->tab && y->context && y->context->parallel &&
+        y->context->parallel->n_threads > 1 && total >= 8192 && y->is_contiguous) {
+        size_t tab_span = rnd_state->tab_len * 6;
+        size_t base_index = rnd_state->tab_index;
+        NCRndDropoutRangeCtx ctx = {
+            .dst = y,
+            .tab = rnd_state->tab,
+            .tab_span = tab_span,
+            .base_index = base_index,
+            .prob = prob,
+            .scale = scale,
+        };
+        nc_parallel_for(y->context, total, 4096, rnd_dropout_range_worker, &ctx);
+        rnd_state->tab_index = (base_index + total) % tab_span;
+        return;
+    }
     for (size_t i = 0; i < total; i++) {
         float v = nc_load_f32(base + i * y->item_size, y->item_type);
         if (rnd_float(rnd_state) < prob)
@@ -1148,6 +1302,12 @@ void nc_tensor_copy(NCTensor *dst, NCTensor *src)
         if (dst->dims[i] != src->dims[i])
             nc_error("same_dims(dst, src)");
     size_t total = tensor_numel(src);
+    if (dst->context && dst->context->parallel && dst->context->parallel->n_threads > 1 &&
+        dst->is_contiguous && src->is_contiguous && dst->item_size == src->item_size && total >= 8192) {
+        NCTensorCopyRangeCtx ctx = { .src = src, .dst = dst };
+        nc_parallel_for(dst->context, total, 4096, tensor_copy_range_worker, &ctx);
+        return;
+    }
     if (dst->is_contiguous && src->is_contiguous && dst->item_size == src->item_size) {
         memcpy(tensor_data_ptr(dst), tensor_const_data_ptr(src), total * src->item_size);
         return;
@@ -1163,6 +1323,12 @@ void nc_tensor_convert(NCTensor *dst, NCTensor *src)
         if (dst->dims[i] != src->dims[i])
             nc_error("same_dims(dst, src)");
     size_t total = tensor_numel(src);
+    if (dst->context && dst->context->parallel && dst->context->parallel->n_threads > 1 &&
+        dst->is_contiguous && src->is_contiguous && total >= 8192) {
+        NCTensorConvertRangeCtx ctx = { .src = src, .dst = dst };
+        nc_parallel_for(dst->context, total, 4096, tensor_convert_range_worker, &ctx);
+        return;
+    }
     uint8_t *d = tensor_data_ptr(dst);
     const uint8_t *s = tensor_const_data_ptr(src);
     for (size_t i = 0; i < total; i++) {
@@ -1240,8 +1406,22 @@ static NCTensor *tensor_binary_same_shape(NCTensor *a, NCTensor *b, float (*fn)(
         dims[i] = ad > bd ? ad : bd;
     }
     NCTensor *y = nc_new_tensor_nz(a->device, a->item_type, n_dims, dims);
+    size_t total = tensor_numel(y);
+    if (a->context->parallel && a->context->parallel->n_threads > 1 &&
+        a->n_dims == b->n_dims && a->is_contiguous && b->is_contiguous && total >= 8192) {
+        NCPointwiseBinaryRangeCtx pctx = {
+            .a = a,
+            .b = b,
+            .dst = y,
+            .fn = fn,
+            .opaque = NULL,
+        };
+        nc_parallel_for(a->context, total, 4096, tensor_binary_range_worker, &pctx);
+        NCTensor *args[2] = { a, b };
+        tensor_add_node(y, op, 2, args);
+        return y;
+    }
     if (a->item_type == NC_TYPE_F32 && a->n_dims == b->n_dims && a->is_contiguous && b->is_contiguous) {
-        size_t total = tensor_numel(y);
         const float *ap = (const float *)tensor_const_data_ptr(a);
         const float *bp = (const float *)tensor_const_data_ptr(b);
         float *yp = (float *)tensor_data_ptr(y);
@@ -1365,6 +1545,23 @@ NCTensor *nc_masked_fill(NCTensor *x, NCTensor *mask, float c, BOOL mask_inv)
 {
     NCTensor *y = nc_new_tensor_nz(x->device, x->item_type, x->n_dims, x->dims);
     size_t total = tensor_numel(x);
+    if (x->is_contiguous && mask->is_contiguous && total >= 8192) {
+        NCMaskedFillRangeCtx pctx = {
+            .x = x,
+            .mask = mask,
+            .dst = y,
+            .c = c,
+            .mask_inv = mask_inv,
+        };
+        nc_parallel_for(x->context, total, 4096, masked_fill_range_worker, &pctx);
+        NCTensor *args[2] = { x, mask };
+        tensor_add_node(y, NC_OP_MASKED_FILL, 2, args);
+        if (y->node) {
+            y->node->fvalue = c;
+            y->node->bvalue = mask_inv;
+        }
+        return y;
+    }
     for (size_t i = 0; i < total; i++) {
         float m = nc_load_f32((const uint8_t *)tensor_const_data_ptr(mask) + i * mask->item_size, mask->item_type);
         float v = nc_load_f32((const uint8_t *)tensor_const_data_ptr(x) + i * x->item_size, x->item_type);
@@ -1392,9 +1589,208 @@ static float fn_gelu(float x, void *opaque)
 }
 static float fn_log(float x, void *opaque) { (void)opaque; return logf(x); }
 
+static void tensor_copy_range_worker(void *opaque, size_t start, size_t end)
+{
+    NCTensorCopyRangeCtx *ctx = opaque;
+    size_t bytes = (end - start) * ctx->src->item_size;
+    memcpy((uint8_t *)tensor_data_ptr(ctx->dst) + start * ctx->dst->item_size,
+           (const uint8_t *)tensor_const_data_ptr(ctx->src) + start * ctx->src->item_size,
+           bytes);
+}
+
+static void tensor_convert_range_worker(void *opaque, size_t start, size_t end)
+{
+    NCTensorConvertRangeCtx *ctx = opaque;
+    uint8_t *dst = tensor_data_ptr(ctx->dst);
+    const uint8_t *src = tensor_const_data_ptr(ctx->src);
+    for (size_t i = start; i < end; i++) {
+        float v = nc_load_f32(src + i * ctx->src->item_size, ctx->src->item_type);
+        nc_store_f32(dst + i * ctx->dst->item_size, ctx->dst->item_type, v);
+    }
+}
+
+static void tensor_unary_range_worker(void *opaque, size_t start, size_t end)
+{
+    NCPointwiseUnaryRangeCtx *ctx = opaque;
+    uint8_t *dst = tensor_data_ptr(ctx->dst);
+    const uint8_t *src = tensor_const_data_ptr(ctx->src);
+    for (size_t i = start; i < end; i++) {
+        float v = nc_load_f32(src + i * ctx->src->item_size, ctx->src->item_type);
+        nc_store_f32(dst + i * ctx->dst->item_size, ctx->dst->item_type, ctx->fn(v, ctx->opaque));
+    }
+}
+
+static void tensor_binary_range_worker(void *opaque, size_t start, size_t end)
+{
+    NCPointwiseBinaryRangeCtx *ctx = opaque;
+    uint8_t *dst = tensor_data_ptr(ctx->dst);
+    const uint8_t *a = tensor_const_data_ptr(ctx->a);
+    const uint8_t *b = tensor_const_data_ptr(ctx->b);
+    for (size_t i = start; i < end; i++) {
+        float x = nc_load_f32(a + i * ctx->a->item_size, ctx->a->item_type);
+        float y = nc_load_f32(b + i * ctx->b->item_size, ctx->b->item_type);
+        nc_store_f32(dst + i * ctx->dst->item_size, ctx->dst->item_type, ctx->fn(x, y, ctx->opaque));
+    }
+}
+
+static void masked_fill_range_worker(void *opaque, size_t start, size_t end)
+{
+    NCMaskedFillRangeCtx *ctx = opaque;
+    uint8_t *dst = tensor_data_ptr(ctx->dst);
+    const uint8_t *x = tensor_const_data_ptr(ctx->x);
+    const uint8_t *mask = tensor_const_data_ptr(ctx->mask);
+    for (size_t i = start; i < end; i++) {
+        float m = nc_load_f32(mask + i * ctx->mask->item_size, ctx->mask->item_type);
+        float v = nc_load_f32(x + i * ctx->x->item_size, ctx->x->item_type);
+        BOOL pred = ctx->mask_inv ? (m == 0.0f) : (m != 0.0f);
+        if (pred)
+            v = ctx->c;
+        nc_store_f32(dst + i * ctx->dst->item_size, ctx->dst->item_type, v);
+    }
+}
+
+static void rnd_unif_range_worker(void *opaque, size_t start, size_t end)
+{
+    NCRndUnifRangeCtx *ctx = opaque;
+    uint8_t *dst = tensor_data_ptr(ctx->dst);
+    for (size_t i = start; i < end; i++) {
+        size_t idx = (ctx->base_index + i) % ctx->tab_span;
+        float u = (ctx->tab[idx] >> 8) * (1.0f / 16777216.0f);
+        float v = ctx->avg + (u * 2.0f - 1.0f) * ctx->range;
+        nc_store_f32(dst + i * ctx->dst->item_size, ctx->dst->item_type, v);
+    }
+}
+
+static void rnd_dropout_range_worker(void *opaque, size_t start, size_t end)
+{
+    NCRndDropoutRangeCtx *ctx = opaque;
+    uint8_t *dst = tensor_data_ptr(ctx->dst);
+    for (size_t i = start; i < end; i++) {
+        size_t idx = (ctx->base_index + i) % ctx->tab_span;
+        float u = (ctx->tab[idx] >> 8) * (1.0f / 16777216.0f);
+        float v = nc_load_f32(dst + i * ctx->dst->item_size, ctx->dst->item_type);
+        if (u < ctx->prob)
+            v = 0.0f;
+        else
+            v *= ctx->scale;
+        nc_store_f32(dst + i * ctx->dst->item_size, ctx->dst->item_type, v);
+    }
+}
+
+static void soft_max_range_worker(void *opaque, size_t start, size_t end)
+{
+    NCSoftMaxRangeCtx *ctx = opaque;
+    for (size_t o = start; o < end; o++) {
+        const uint8_t *xb = tensor_const_data_ptr(ctx->x) + o * ctx->inner * ctx->x->item_size;
+        uint8_t *yb = tensor_data_ptr(ctx->y) + o * ctx->inner * ctx->y->item_size;
+        float maxv = -INFINITY;
+        for (size_t i = 0; i < ctx->inner; i++)
+            maxv = fmaxf(maxv, nc_load_f32(xb + i * ctx->x->item_size, ctx->x->item_type));
+        float sum = 0.0f;
+        for (size_t i = 0; i < ctx->inner; i++) {
+            float e = expf(nc_load_f32(xb + i * ctx->x->item_size, ctx->x->item_type) - maxv);
+            sum += e;
+            nc_store_f32(yb + i * ctx->y->item_size, ctx->y->item_type, e);
+        }
+        for (size_t i = 0; i < ctx->inner; i++) {
+            float v = nc_load_f32(yb + i * ctx->y->item_size, ctx->y->item_type) / sum;
+            nc_store_f32(yb + i * ctx->y->item_size, ctx->y->item_type, v);
+        }
+    }
+}
+
+static void layer_norm_range_worker(void *opaque, size_t start, size_t end)
+{
+    NCLayerNormRangeCtx *ctx = opaque;
+    for (size_t o = start; o < end; o++) {
+        const uint8_t *xb = tensor_const_data_ptr(ctx->x) + o * ctx->inner * ctx->x->item_size;
+        uint8_t *yb = tensor_data_ptr(ctx->y) + o * ctx->inner * ctx->y->item_size;
+        double mean = 0.0;
+        double var = 0.0;
+        for (size_t i = 0; i < ctx->inner; i++) {
+            double v = nc_load_f32(xb + i * ctx->x->item_size, ctx->x->item_type);
+            mean += v;
+            if (ctx->rms)
+                var += v * v;
+        }
+        mean /= (double)ctx->inner;
+        if (!ctx->rms) {
+            for (size_t i = 0; i < ctx->inner; i++) {
+                double v = nc_load_f32(xb + i * ctx->x->item_size, ctx->x->item_type) - mean;
+                var += v * v;
+            }
+            var /= (double)ctx->inner;
+        } else {
+            var /= (double)ctx->inner;
+        }
+        double denom = sqrt(var + (double)ctx->eps);
+        if (ctx->aux)
+            nc_store_f32((uint8_t *)tensor_data_ptr(ctx->aux) + o * ctx->aux->item_size, ctx->aux->item_type, (float)(1.0 / denom));
+        for (size_t i = 0; i < ctx->inner; i++) {
+            double v = nc_load_f32(xb + i * ctx->x->item_size, ctx->x->item_type);
+            if (!ctx->rms)
+                v -= mean;
+            nc_store_f32(yb + i * ctx->y->item_size, ctx->y->item_type, (float)(v / denom));
+        }
+    }
+}
+
+static void reduce_sum_range_worker(void *opaque, size_t start, size_t end)
+{
+    NCReduceSumRangeCtx *ctx = opaque;
+    for (size_t yidx = start; yidx < end; yidx++) {
+        size_t base = yidx * ctx->collapse;
+        double acc = 0.0;
+        float cur = nc_load_f32((uint8_t *)tensor_const_data_ptr(ctx->y0) + yidx * ctx->y0->item_size, ctx->y0->item_type);
+        for (size_t j = 0; j < ctx->collapse; j++) {
+            size_t i = base + j;
+            acc += nc_load_f32((const uint8_t *)tensor_const_data_ptr(ctx->x) + i * ctx->x->item_size, ctx->x->item_type);
+        }
+        nc_store_f32((uint8_t *)tensor_data_ptr(ctx->y0) + yidx * ctx->y0->item_size, ctx->y0->item_type, (float)(cur + acc));
+    }
+}
+
+static void reduce_sum_scalar_range_worker(void *opaque, size_t start, size_t end)
+{
+    NCReduceSumScalarRangeCtx *ctx = opaque;
+    size_t slot = start / ctx->chunk;
+    double acc = 0.0;
+    const uint8_t *base = tensor_const_data_ptr(ctx->x);
+    for (size_t i = start; i < end; i++)
+        acc += nc_load_f32(base + i * ctx->x->item_size, ctx->x->item_type);
+    ctx->partials[slot] = acc;
+}
+
+static void reduce_sum_sqr_scalar_range_worker(void *opaque, size_t start, size_t end)
+{
+    NCReduceSumSqrScalarRangeCtx *ctx = opaque;
+    size_t slot = start / ctx->chunk;
+    double acc = 0.0;
+    const uint8_t *base = tensor_const_data_ptr(ctx->x);
+    for (size_t i = start; i < end; i++) {
+        float v = nc_load_f32(base + i * ctx->x->item_size, ctx->x->item_type);
+        acc += (double)v * (double)v;
+    }
+    ctx->partials[slot] = acc;
+}
+
 static NCTensor *tensor_unary_same_shape(NCTensor *x, float (*fn)(float, void *), NCOp op)
 {
     NCTensor *y = nc_new_tensor_nz(x->device, x->item_type, x->n_dims, x->dims);
+    size_t total = tensor_numel(y);
+    if (x->context->parallel && x->context->parallel->n_threads > 1 &&
+        x->is_contiguous && total >= 8192) {
+        NCPointwiseUnaryRangeCtx pctx = {
+            .src = x,
+            .dst = y,
+            .fn = fn,
+            .opaque = NULL,
+        };
+        nc_parallel_for(x->context, total, 4096, tensor_unary_range_worker, &pctx);
+        NCTensor *args[1] = { x };
+        tensor_add_node(y, op, 1, args);
+        return y;
+    }
     tensor_map_unary_recursive(y, x, 0, 0, 0, fn, NULL);
     NCTensor *args[1] = { x };
     tensor_add_node(y, op, 1, args);
@@ -1525,14 +1921,21 @@ NCTensor *nc_reduce_sum(NCTensor *y0, NCTensor *x, int n_dims)
         for (int i = 0; i < n_dims; i++)
             dims[i] = x->dims[i];
         y0 = nc_new_tensor(x->device, x->item_type, n_dims, dims);
+        tensor_fill_zero(y0);
     }
-    tensor_fill_zero(y0);
     size_t total = tensor_numel(x);
     size_t collapse = 1;
     for (int i = n_dims; i < x->n_dims; i++)
         collapse *= x->dims[i];
     if (n_dims == x->n_dims) {
-        nc_tensor_copy(y0, x);
+        size_t total2 = tensor_numel(x);
+        uint8_t *yd = tensor_data_ptr(y0);
+        const uint8_t *xd = tensor_const_data_ptr(x);
+        for (size_t i = 0; i < total2; i++) {
+            float cur = nc_load_f32(yd + i * y0->item_size, y0->item_type);
+            float v = nc_load_f32(xd + i * x->item_size, x->item_type);
+            nc_store_f32(yd + i * y0->item_size, y0->item_type, cur + v);
+        }
         return y0;
     }
     size_t y_total = tensor_numel(y0);
@@ -1555,7 +1958,35 @@ NCTensor *nc_reduce_sum(NCTensor *y0, NCTensor *x, int n_dims)
                     sum_b += nc_load_f32(bb + i * b->item_size, b->item_type);
                 double out = x->node->op == NC_OP_ADD ? (sum_a + sum_b) :
                              x->node->op == NC_OP_SUB ? (sum_a - sum_b) : sum_a;
+                out += nc_load_f32(tensor_data_ptr(y0), y0->item_type);
                 nc_store_f32(tensor_data_ptr(y0), y0->item_type, (float)out);
+                NCTensor *args[1] = { x };
+                tensor_add_node(y0, NC_OP_REDUCE_SUM, 1, args);
+                (void)y_total;
+                return y0;
+            }
+        }
+        if (x->context->parallel && x->context->parallel->n_threads > 1 &&
+            x->is_contiguous && total >= 8192) {
+            NCParallelState *ps = x->context ? x->context->parallel : NULL;
+            if (ps && ps->n_threads > 1) {
+                size_t chunk = nc_parallel_choose_chunk(total, ps->n_threads, 4096);
+                size_t n_chunks = (total + chunk - 1) / chunk;
+                double *partials = nc_mallocz(sizeof(*partials) * n_chunks);
+                if (!partials)
+                    nc_error("not enough memory");
+                NCReduceSumScalarRangeCtx pctx = {
+                    .partials = partials,
+                    .chunk = chunk,
+                    .x = x,
+                };
+                nc_parallel_for(x->context, total, 4096, reduce_sum_scalar_range_worker, &pctx);
+                double sum = 0.0;
+                for (size_t i = 0; i < n_chunks; i++)
+                    sum += partials[i];
+                nc_free(partials);
+                sum += nc_load_f32(tensor_data_ptr(y0), y0->item_type);
+                nc_store_f32(tensor_data_ptr(y0), y0->item_type, (float)sum);
                 NCTensor *args[1] = { x };
                 tensor_add_node(y0, NC_OP_REDUCE_SUM, 1, args);
                 (void)y_total;
@@ -1567,30 +1998,45 @@ NCTensor *nc_reduce_sum(NCTensor *y0, NCTensor *x, int n_dims)
             float v = nc_load_f32((const uint8_t *)tensor_const_data_ptr(x) + i * x->item_size, x->item_type);
             sum += v;
         }
+        sum += nc_load_f32(tensor_data_ptr(y0), y0->item_type);
         nc_store_f32(tensor_data_ptr(y0), y0->item_type, (float)sum);
         NCTensor *args[1] = { x };
         tensor_add_node(y0, NC_OP_REDUCE_SUM, 1, args);
         (void)y_total;
         return y0;
     }
-    float *acc = nc_mallocz(sizeof(*acc) * y_total);
-    if (!acc)
-        nc_error("not enough memory");
-    float *comp = nc_mallocz(sizeof(*comp) * y_total);
-    if (!comp)
-        nc_error("not enough memory");
-    for (size_t i = 0; i < total; i++) {
-        size_t yidx = i / collapse;
-        float v = nc_load_f32((const uint8_t *)tensor_const_data_ptr(x) + i * x->item_size, x->item_type);
-        float y = v - comp[yidx];
-        float t = acc[yidx] + y;
-        comp[yidx] = (t - acc[yidx]) - y;
-        acc[yidx] = t;
+    if (x->context->parallel && x->context->parallel->n_threads > 1 &&
+        x->is_contiguous && y_total >= 1024) {
+        NCReduceSumRangeCtx pctx = {
+            .x = x,
+            .y0 = y0,
+            .collapse = collapse,
+            .y_total = y_total,
+            .n_dims = n_dims,
+        };
+        nc_parallel_for(x->context, y_total, 1, reduce_sum_range_worker, &pctx);
+    } else {
+        float *acc = nc_mallocz(sizeof(*acc) * y_total);
+        if (!acc)
+            nc_error("not enough memory");
+        float *comp = nc_mallocz(sizeof(*comp) * y_total);
+        if (!comp)
+            nc_error("not enough memory");
+        for (size_t i = 0; i < y_total; i++)
+            acc[i] = nc_load_f32((uint8_t *)tensor_const_data_ptr(y0) + i * y0->item_size, y0->item_type);
+        for (size_t i = 0; i < total; i++) {
+            size_t yidx = i / collapse;
+            float v = nc_load_f32((const uint8_t *)tensor_const_data_ptr(x) + i * x->item_size, x->item_type);
+            float y = v - comp[yidx];
+            float t = acc[yidx] + y;
+            comp[yidx] = (t - acc[yidx]) - y;
+            acc[yidx] = t;
+        }
+        for (size_t i = 0; i < y_total; i++)
+            nc_store_f32((uint8_t *)tensor_data_ptr(y0) + i * y0->item_size, y0->item_type, acc[i]);
+        nc_free(acc);
+        nc_free(comp);
     }
-    for (size_t i = 0; i < y_total; i++)
-        nc_store_f32((uint8_t *)tensor_data_ptr(y0) + i * y0->item_size, y0->item_type, acc[i]);
-    nc_free(acc);
-    nc_free(comp);
     NCTensor *args[1] = { x };
     tensor_add_node(y0, NC_OP_REDUCE_SUM, 1, args);
     (void)y_total;
@@ -1605,13 +2051,34 @@ NCTensor *nc_sum(NCTensor *x)
 NCTensor *nc_reduce_sum_sqr(NCTensor *x)
 {
     NCTensor *y = nc_new_scalar(x->device, x->item_type);
-    float acc = 0.0f;
     size_t total = tensor_numel(x);
-    for (size_t i = 0; i < total; i++) {
-        float v = nc_load_f32((const uint8_t *)tensor_const_data_ptr(x) + i * x->item_size, x->item_type);
-        acc += v * v;
+    if (x->context->parallel && x->context->parallel->n_threads > 1 &&
+        x->is_contiguous && total >= 8192) {
+        NCParallelState *ps = x->context->parallel;
+        size_t chunk = nc_parallel_choose_chunk(total, ps->n_threads, 4096);
+        size_t n_chunks = (total + chunk - 1) / chunk;
+        double *partials = nc_mallocz(sizeof(*partials) * n_chunks);
+        if (!partials)
+            nc_error("not enough memory");
+        NCReduceSumSqrScalarRangeCtx pctx = {
+            .partials = partials,
+            .chunk = chunk,
+            .x = x,
+        };
+        nc_parallel_for(x->context, total, 4096, reduce_sum_sqr_scalar_range_worker, &pctx);
+        double acc = 0.0;
+        for (size_t i = 0; i < n_chunks; i++)
+            acc += partials[i];
+        nc_free(partials);
+        nc_store_f32(tensor_data_ptr(y), y->item_type, (float)acc);
+    } else {
+        float acc = 0.0f;
+        for (size_t i = 0; i < total; i++) {
+            float v = nc_load_f32((const uint8_t *)tensor_const_data_ptr(x) + i * x->item_size, x->item_type);
+            acc += v * v;
+        }
+        nc_store_f32(tensor_data_ptr(y), y->item_type, acc);
     }
-    nc_store_f32(tensor_data_ptr(y), y->item_type, acc);
     NCTensor *args[1] = { x };
     tensor_add_node(y, NC_OP_REDUCE_SUM_SQR, 1, args);
     return y;
@@ -2130,21 +2597,31 @@ NCTensor *nc_soft_max(NCTensor *x)
     for (int i = 0; i < axis; i++)
         outer *= x->dims[i];
     size_t inner = x->dims[axis];
-    for (size_t o = 0; o < outer; o++) {
-        const uint8_t *xb = tensor_const_data_ptr(x) + o * inner * x->item_size;
-        uint8_t *yb = tensor_data_ptr(y) + o * inner * y->item_size;
-        float maxv = -INFINITY;
-        for (size_t i = 0; i < inner; i++)
-            maxv = fmaxf(maxv, nc_load_f32(xb + i * x->item_size, x->item_type));
-        float sum = 0.0f;
-        for (size_t i = 0; i < inner; i++) {
-            float e = expf(nc_load_f32(xb + i * x->item_size, x->item_type) - maxv);
-            sum += e;
-            nc_store_f32(yb + i * y->item_size, y->item_type, e);
-        }
-        for (size_t i = 0; i < inner; i++) {
-            float v = nc_load_f32(yb + i * y->item_size, y->item_type) / sum;
-            nc_store_f32(yb + i * y->item_size, y->item_type, v);
+    if (x->context->parallel && x->context->parallel->n_threads > 1 && outer >= 128) {
+        NCSoftMaxRangeCtx pctx = {
+            .x = x,
+            .y = y,
+            .inner = inner,
+            .axis = axis,
+        };
+        nc_parallel_for(x->context, outer, 1, soft_max_range_worker, &pctx);
+    } else {
+        for (size_t o = 0; o < outer; o++) {
+            const uint8_t *xb = tensor_const_data_ptr(x) + o * inner * x->item_size;
+            uint8_t *yb = tensor_data_ptr(y) + o * inner * y->item_size;
+            float maxv = -INFINITY;
+            for (size_t i = 0; i < inner; i++)
+                maxv = fmaxf(maxv, nc_load_f32(xb + i * x->item_size, x->item_type));
+            float sum = 0.0f;
+            for (size_t i = 0; i < inner; i++) {
+                float e = expf(nc_load_f32(xb + i * x->item_size, x->item_type) - maxv);
+                sum += e;
+                nc_store_f32(yb + i * y->item_size, y->item_type, e);
+            }
+            for (size_t i = 0; i < inner; i++) {
+                float v = nc_load_f32(yb + i * y->item_size, y->item_type) / sum;
+                nc_store_f32(yb + i * y->item_size, y->item_type, v);
+            }
         }
     }
     NCTensor *args[1] = { x };
@@ -2197,40 +2674,53 @@ static NCTensor *norm_last_dim(NCTensor *x, float eps, BOOL rms)
     for (int i = 0; i < axis; i++)
         outer *= x->dims[i];
     size_t inner = x->dims[axis];
-    for (size_t o = 0; o < outer; o++) {
-        const uint8_t *xb = tensor_const_data_ptr(x) + o * inner * x->item_size;
-        uint8_t *yb = tensor_data_ptr(y) + o * inner * y->item_size;
-        double mean = 0.0;
-        double var = 0.0;
-        for (size_t i = 0; i < inner; i++) {
-            double v = nc_load_f32(xb + i * x->item_size, x->item_type);
-            mean += v;
-            if (rms)
-                var += v * v;
-        }
-        mean /= (double)inner;
-        if (!rms) {
+    if (x->context->parallel && x->context->parallel->n_threads > 1 && outer >= 128) {
+        NCLayerNormRangeCtx pctx = {
+            .x = x,
+            .y = y,
+            .aux = aux,
+            .inner = inner,
+            .axis = axis,
+            .rms = rms,
+            .eps = eps,
+        };
+        nc_parallel_for(x->context, outer, 1, layer_norm_range_worker, &pctx);
+    } else {
+        for (size_t o = 0; o < outer; o++) {
+            const uint8_t *xb = tensor_const_data_ptr(x) + o * inner * x->item_size;
+            uint8_t *yb = tensor_data_ptr(y) + o * inner * y->item_size;
+            double mean = 0.0;
+            double var = 0.0;
             for (size_t i = 0; i < inner; i++) {
-                double v = nc_load_f32(xb + i * x->item_size, x->item_type) - mean;
-                var += v * v;
+                double v = nc_load_f32(xb + i * x->item_size, x->item_type);
+                mean += v;
+                if (rms)
+                    var += v * v;
             }
-            var /= (double)inner;
-        } else {
-            var /= (double)inner;
-        }
-        double denom = sqrt(var + (double)eps);
-        nc_store_f32((uint8_t *)tensor_data_ptr(aux) + o * aux->item_size, aux->item_type, (float)(1.0 / denom));
-        for (size_t i = 0; i < inner; i++) {
-            double v = nc_load_f32(xb + i * x->item_size, x->item_type);
-            if (!rms)
-                v -= mean;
-            float out_v = (float)(v / denom);
-            if (rms && y->item_type == NC_TYPE_BF16) {
-                uint32_t u;
-                memcpy(&u, &out_v, sizeof(u));
-                *(uint16_t *)(yb + i * y->item_size) = (uint16_t)(u >> 16);
+            mean /= (double)inner;
+            if (!rms) {
+                for (size_t i = 0; i < inner; i++) {
+                    double v = nc_load_f32(xb + i * x->item_size, x->item_type) - mean;
+                    var += v * v;
+                }
+                var /= (double)inner;
             } else {
-                nc_store_f32(yb + i * y->item_size, y->item_type, out_v);
+                var /= (double)inner;
+            }
+            double denom = sqrt(var + (double)eps);
+            nc_store_f32((uint8_t *)tensor_data_ptr(aux) + o * aux->item_size, aux->item_type, (float)(1.0 / denom));
+            for (size_t i = 0; i < inner; i++) {
+                double v = nc_load_f32(xb + i * x->item_size, x->item_type);
+                if (!rms)
+                    v -= mean;
+                float out_v = (float)(v / denom);
+                if (rms && y->item_type == NC_TYPE_BF16) {
+                    uint32_t u;
+                    memcpy(&u, &out_v, sizeof(u));
+                    *(uint16_t *)(yb + i * y->item_size) = (uint16_t)(u >> 16);
+                } else {
+                    nc_store_f32(yb + i * y->item_size, y->item_type, out_v);
+                }
             }
         }
     }

@@ -220,4 +220,5 @@ Note: these helpers do not need a duplicate implementation in `real_code/` becau
 ## Notes
 
 - `nctest.c` is kept logically aligned with `etalon_nctest.c`; differences are limited to diagnostics and the success marker.
+- Internal parallel execution exists, but it is only enabled when a context is created with `nb_threads > 1`. The default benchmark path stays single-threaded unless a caller explicitly opts in.
 - If we add a real CUDA backend or expand the serialized parameter format, this checklist should be updated together with the code.

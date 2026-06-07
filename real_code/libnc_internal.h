@@ -51,6 +51,7 @@ struct NCContext;
 struct NCDevice;
 struct NCTensorBuffer;
 struct NCNode;
+struct NCParallelState;
 
 typedef struct NCTensor {
     struct list_head link;
@@ -93,6 +94,7 @@ typedef struct NCContext {
     int nb_threads;
     size_t heap_size;
     NCDevice *cpu_device;
+    struct NCParallelState *parallel;
 } NCContext;
 
 typedef struct NCNode {

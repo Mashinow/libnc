@@ -6,6 +6,7 @@ This directory contains the maintained implementation split out of the repositor
 
 - `libnc_impl.c` - main implementation and public API entry points.
 - `libnc_internal.h` - internal types, helper prototypes, and cross-module declarations.
+- `libnc_parallel.c` - internal worker-pool and `parallel_for` helper.
 - `libnc_device_helpers.c` - device construction and compatibility helpers.
 - `libnc_graph_helpers.c` - graph merge / concat helpers.
 - `libnc_param_io.c` - parameter/state save-load helpers.
@@ -15,6 +16,7 @@ This directory contains the maintained implementation split out of the repositor
 - The shipped tests in `nctest.c` pass on the current build and print `all tests success`.
 - `matmul_test.c`, `ncspeed.c`, and `own_tests.c` also pass on the current build.
 - `nctest.c` is logically aligned with `etalon_nctest.c`; the differences are diagnostic logging and the explicit success marker.
+- The runtime has an internal worker pool, but it is only enabled when a context is created with `nb_threads > 1`. The default benchmark path stays single-threaded unless a caller explicitly asks for parallelism.
 
 ## Build
 
