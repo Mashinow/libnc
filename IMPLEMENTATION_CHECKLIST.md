@@ -2,6 +2,39 @@
 
 Статус ниже относится к текущему состоянию `libnc.c` и файлов в `real_code/`.
 
+## cutils.h / list.h
+
+### Utility helpers covered by `cutils.h`
+- [x] `BOOL` / `TRUE` / `FALSE`
+- [x] `bfloat16_t`
+- [x] `get_cycles`
+- [x] `max_int`
+- [x] `min_int`
+- [x] `max_size_t`
+- [x] `min_size_t`
+- [x] `max_ssize_t`
+- [x] `min_ssize_t`
+- [x] `clamp_int`
+- [x] `clamp_float`
+- [x] `clz32`
+- [x] `clz64`
+- [x] `floor_log2`
+- [x] `ceil_log2`
+- [x] `squaref`
+
+### List primitives covered by `list.h`
+- [x] `init_list_head`
+- [x] `list_add`
+- [x] `list_add_tail`
+- [x] `list_del`
+- [x] `list_empty`
+- [x] `list_for_each`
+- [x] `list_for_each_safe`
+- [x] `list_for_each_prev`
+- [x] `list_for_each_prev_safe`
+
+Примечание: отдельной реализации этих helper'ов в `real_code/` не требуется, потому что `libnc.h` уже включает `cutils.h` и `list.h`.
+
 ## Реализовано
 
 ### Runtime / core
