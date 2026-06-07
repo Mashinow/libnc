@@ -25,22 +25,6 @@ This directory contains the maintained implementation split out of the repositor
 - `nc_new_cuda_device()` searches the executable directory, `PATH`, and CUDA environment variables for `libnc_cuda.dll` or `libnc_cuda.so`, and preloads CUDA runtime libraries by filename pattern rather than by versioned names. The Windows loader also honors `LIBNC_CUDA_DLL`, `LIBNC_CUDA_DIR`, and `LIBNC_CUDA_HOME` overrides when present.
 - `nc_cuda_backend_available()` can be used by tests or tooling to detect whether the CUDA backend DLL was actually discovered, versus only the CPU compatibility fallback.
 
-## Build
-
-Build from the repository root so includes resolve correctly:
-
-```bash
-gcc -std=gnu11 -O2 -I. -shared -o libnc.dll libnc.c -Wl,--out-implib,libnc.dll.a
-gcc -std=gnu11 -O2 -I. -shared -o libnc_cuda.dll src/libnc_cuda_backend.c -L. -lnc -Wl,--out-implib,libnc_cuda.dll.a
-```
-
-Linux or WSL uses the same sources with shared objects:
-
-```bash
-gcc -std=gnu11 -O2 -fPIC -I. -shared -o libnc.so libnc.c -lpthread -ldl -lm
-gcc -std=gnu11 -O2 -fPIC -I. -shared -o libnc_cuda.so src/libnc_cuda_backend.c -L. -lnc -lpthread -ldl -lm
-```
-
 ## Notes
 
 - Keep `#include` directives at the top of files.

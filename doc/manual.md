@@ -20,7 +20,6 @@ For the exported API reference, see [api_reference.md](./api_reference.md).
   - [3.3 Compute graph optimization](#33-compute-graph-optimization)
   - [3.4 CUDA backend](#34-cuda-backend)
   - [3.5 BF16 support](#35-bf16-support)
-- [4. Build and platform notes](#4-build-and-platform-notes)
 
 Source notes:
 - original manual: `doc/libnc.html` from the 2021 release
@@ -121,50 +120,7 @@ This reconstruction follows the same idea:
 - BF16 parameters keep a float32 shadow copy for optimizer updates
 - the GPU backend has BF16-aware tensor kernels where the backend is present
 
-## 4. Build and platform notes
-
-### Windows
-
-Build the main library:
-
-```bash
-gcc -std=gnu11 -O2 -I. -shared -o libnc.dll libnc.c -Wl,--out-implib,libnc.dll.a
-```
-
-Build the CUDA backend:
-
-```bash
-gcc -std=gnu11 -O2 -I. -shared -o libnc_cuda.dll src/libnc_cuda_backend.c -L. -lnc -Wl,--out-implib,libnc_cuda.dll.a
-```
-
-Build the shipped tests:
-
-```bash
-gcc -std=gnu11 -O2 -I. tests/nctest.c libnc.c -o nctest.exe
-gcc -std=gnu11 -O2 -I. tests/matmul_test.c libnc.c -o matmul_test.exe
-gcc -std=gnu11 -O2 -I. tests/ncspeed.c libnc.c -o ncspeed.exe
-gcc -std=gnu11 -O2 -I. tests/own_tests.c libnc.c -o own_tests.exe
-```
-
-### Linux / WSL
-
-Build the shared objects:
-
-```bash
-gcc -std=gnu11 -O2 -fPIC -I. -shared -o libnc.so libnc.c -lpthread -ldl -lm
-gcc -std=gnu11 -O2 -fPIC -I. -shared -o libnc_cuda.so src/libnc_cuda_backend.c -L. -lnc -lpthread -ldl -lm
-```
-
-Build the tests:
-
-```bash
-gcc -std=gnu11 -O2 -I. tests/nctest.c libnc.c -o nctest -lpthread -ldl -lm
-gcc -std=gnu11 -O2 -I. tests/matmul_test.c libnc.c -o matmul_test -lpthread -ldl -lm
-gcc -std=gnu11 -O2 -I. tests/ncspeed.c libnc.c -o ncspeed -lpthread -ldl -lm
-gcc -std=gnu11 -O2 -I. tests/own_tests.c libnc.c -o own_tests -lpthread -ldl -lm
-```
-
-### Verified status
+## 4. Verified status
 
 - Windows 10 has been validated in this reconstruction
 - Linux / WSL support is documented and is being checked separately
