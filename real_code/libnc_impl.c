@@ -241,11 +241,16 @@ typedef struct NCSGDOptState {
     struct list_head vars;
 } NCSGDOptState;
 
- #include "libnc_device_helpers.c"
 static void context_track_node(NCContext *ctx, NCNode *n);
+static void context_track_device(NCContext *ctx, NCDevice *d);
+static inline size_t tensor_numel(const NCTensor *t);
+static inline void *tensor_data_ptr(const NCTensor *t);
+static inline const void *tensor_const_data_ptr(const NCTensor *t);
 void nc_node_set_parent(NCNode *n, int arg_index, const NCNode *n1);
 
+#include "libnc_device_helpers.c"
 #include "libnc_graph_helpers.c"
+#include "libnc_param_io.c"
 
 static inline size_t item_shift(NCTypeEnum type)
 {
@@ -2367,8 +2372,6 @@ size_t nc_get_param_count(NCParamList *pl)
     return c;
 }
 
-#include "libnc_param_io.c"
-
 NCSGDOptState *nc_sgd_opt_init(NCContext *m, const SGDOptParams *p)
 {
     NCSGDOptState *s = nc_mallocz(sizeof(*s));
@@ -2459,7 +2462,10 @@ float nc_sgd_opt_get_lr(NCSGDOptState *s)
 
 NCTensor *nc_sgd_opt_get_grad(NCParam *p)
 {
-    return p ? p->saved_grad : NULL;
+    if (!p || !p->saved_grad)
+        return NULL;
+    p->saved_grad->ref_count++;
+    return p->saved_grad;
 }
 
 void rnd_init(RNDState *s, uint32_t seed)
