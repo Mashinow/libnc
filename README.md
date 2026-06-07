@@ -31,10 +31,22 @@ Build the main library from the repository root:
 gcc -std=gnu11 -O2 -I. -shared -o libnc.dll libnc.c -Wl,--out-implib,libnc.dll.a
 ```
 
+On Linux or WSL, build the shared object instead:
+
+```bash
+gcc -std=gnu11 -O2 -fPIC -I. -shared -o libnc.so libnc.c -lpthread -ldl -lm
+```
+
 Build the CUDA backend DLL if you want GPU acceleration:
 
 ```bash
 gcc -std=gnu11 -O2 -I. -shared -o libnc_cuda.dll src/libnc_cuda_backend.c -L. -lnc -Wl,--out-implib,libnc_cuda.dll.a
+```
+
+On Linux or WSL, build the CUDA backend shared object instead:
+
+```bash
+gcc -std=gnu11 -O2 -fPIC -I. -shared -o libnc_cuda.so src/libnc_cuda_backend.c -L. -lnc -lpthread -ldl -lm
 ```
 
 Build the tests from the repository root:
@@ -44,6 +56,15 @@ gcc -std=gnu11 -O2 -I. tests/nctest.c libnc.c -o nctest.exe
 gcc -std=gnu11 -O2 -I. tests/matmul_test.c libnc.c -o matmul_test.exe
 gcc -std=gnu11 -O2 -I. tests/ncspeed.c libnc.c -o ncspeed.exe
 gcc -std=gnu11 -O2 -I. tests/own_tests.c libnc.c -o own_tests.exe
+```
+
+On Linux or WSL, use the shared object and pthread/dl/libm links:
+
+```bash
+gcc -std=gnu11 -O2 -I. tests/nctest.c libnc.c -o nctest -lpthread -ldl -lm
+gcc -std=gnu11 -O2 -I. tests/matmul_test.c libnc.c -o matmul_test -lpthread -ldl -lm
+gcc -std=gnu11 -O2 -I. tests/ncspeed.c libnc.c -o ncspeed -lpthread -ldl -lm
+gcc -std=gnu11 -O2 -I. tests/own_tests.c libnc.c -o own_tests -lpthread -ldl -lm
 ```
 
 ## Verification
