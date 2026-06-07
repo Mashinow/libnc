@@ -40,7 +40,7 @@ The parts that are still intentionally simplified or only partially matched to t
 - full serialized state/coef format compatibility in all corner cases
 - the exact original SGD/ADAM behavior and all low-level CUDA backend details
 
-For the current detailed status, see [IMPLEMENTATION_CHECKLIST.md](/F:/source/repos/libnc/IMPLEMENTATION_CHECKLIST.md).
+For the current detailed status, see [IMPLEMENTATION_CHECKLIST.md](https://github.com/Mashinow/libnc/blob/master/IMPLEMENTATION_CHECKLIST.md).
 
 ## Build
 
