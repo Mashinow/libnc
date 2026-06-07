@@ -117,6 +117,9 @@ typedef struct NCRNDState {
     struct list_head link;
     NCDevice *device;
     uint32_t state;
+    uint32_t *tab;
+    size_t tab_len;
+    size_t tab_index;
 } NCRNDState;
 
 typedef struct SGDOptVarState {
