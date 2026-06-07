@@ -1,0 +1,17 @@
+enum nc_type_name_table  {
+    NC_TYPE_F32  = 0,  
+    NC_TYPE_BF16 = 1,
+    NC_TYPE_F16  = 2,
+    NC_TYPE_I8   = 3,
+    NC_TYPE_I16  = 4,
+    NC_TYPE_I32  = 5,
+};
+
+uint64_t nc_type_size_table[] = {
+    4, // f32
+    2, // bf16
+    2, // f16
+    1, // i8
+    2, // i16
+    4, // i32
+};
