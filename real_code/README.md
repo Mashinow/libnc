@@ -1,16 +1,31 @@
 # real_code layout
 
-- `libnc_impl.c` - current main implementation moved out of the repository root.
-- `libnc_internal.h` - internal type definitions and forward declarations shared by modules.
-- `libnc_extra.c` - small missing API additions that are easier to keep separate.
-- `libnc_device_helpers.c` - device constructors and compatibility helpers.
-- `libnc_graph_helpers.c` - graph node helpers for concat/merge logic.
-- `libnc_param_io.c` - parameter save/load helpers and file format handling.
+This directory contains the maintained implementation split out of the repository root.
 
-Planned next split:
-- `libnc_runtime.c`
-- `libnc_tensor.c`
-- `libnc_ops.c`
-- `libnc_graph.c`
-- `libnc_params.c`
-- `libnc_misc.c`
+## Modules
+
+- `libnc_impl.c` - main implementation and public API entry points.
+- `libnc_internal.h` - internal types, helper prototypes, and cross-module declarations.
+- `libnc_device_helpers.c` - device construction and compatibility helpers.
+- `libnc_graph_helpers.c` - graph merge / concat helpers.
+- `libnc_param_io.c` - parameter/state save-load helpers.
+
+## Current status
+
+- The shipped tests in `nctest.c` pass on the current build and print `all tests success`.
+- `matmul_test.c`, `ncspeed.c`, and `own_tests.c` also pass on the current build.
+- `nctest.c` is logically aligned with `etalon_nctest.c`; the differences are diagnostic logging and the explicit success marker.
+
+## Build
+
+Build from the repository root so includes resolve correctly:
+
+```bash
+gcc -std=gnu11 -O2 -I. -shared -o libnc.dll libnc.c -Wl,--out-implib,libnc.dll.a
+```
+
+## Notes
+
+- Keep `#include` directives at the top of files.
+- Keep public API behavior aligned with `pseudo_code/` unless the pseudocode is clearly broken. In that case, prefer a logically correct implementation.
+- When you change runtime behavior, update both this README and `IMPLEMENTATION_CHECKLIST.md`.

@@ -1,10 +1,10 @@
 # libnc implementation checklist
 
-Статус ниже относится к текущему состоянию `libnc.c` и файлов в `real_code/`.
+Статус отражает текущее состояние кода в `real_code/` и базовых зависимостей `cutils.h` / `list.h`.
 
-## cutils.h / list.h
+## Utility helpers
 
-### Utility helpers covered by `cutils.h`
+### Covered by `cutils.h`
 - [x] `BOOL` / `TRUE` / `FALSE`
 - [x] `bfloat16_t`
 - [x] `get_cycles`
@@ -22,7 +22,7 @@
 - [x] `ceil_log2`
 - [x] `squaref`
 
-### List primitives covered by `list.h`
+### Covered by `list.h`
 - [x] `init_list_head`
 - [x] `list_add`
 - [x] `list_add_tail`
@@ -33,9 +33,9 @@
 - [x] `list_for_each_prev`
 - [x] `list_for_each_prev_safe`
 
-Примечание: отдельной реализации этих helper'ов в `real_code/` не требуется, потому что `libnc.h` уже включает `cutils.h` и `list.h`.
+Note: these helpers do not need a duplicate implementation in `real_code/` because they are included through `libnc.h`.
 
-## Реализовано
+## Implemented
 
 ### Runtime / core
 - [x] `nc_malloc`
@@ -49,7 +49,9 @@
 - [x] `nc_context_init`
 - [x] `nc_context_end`
 - [x] `nc_new_cpu_device`
-- [x] `nc_new_device` для `cpu`
+- [x] `nc_new_device` for `cpu`
+- [~] `nc_new_cuda_device` - logical compatibility device `cuda:<index>`, not a real CUDA backend
+- [~] `nc_new_device` for `cuda[:index]` - routes to the compatibility device path
 - [x] `nc_synchronize`
 - [x] `nc_new_tensor_buffer`
 - [x] `nc_dup_tensor_buffer`
@@ -141,8 +143,8 @@
 - [x] `nc_split`
 - [x] `nc_vsplit`
 - [x] `nc_hsplit`
-- [~] `nc_pad`
-- [~] `nc_resize`
+- [x] `nc_pad`
+- [x] `nc_resize`
 - [x] `nc_make_contiguous`
 - [x] `nc_permute_alias`
 - [x] `nc_permute`
@@ -168,8 +170,8 @@
 - [x] `nc_stop_grad`
 - [x] `nc_dup_node`
 - [x] `nc_free_node`
-- [~] `nc_node_set_parent`
-- [~] `nc_node_set_arg`
+- [~] `nc_node_set_parent` - simplified node/parent wiring compared with the original binary
+- [~] `nc_node_set_arg` - simplified node/arg wiring compared with the original binary
 - [x] `nc_dump_graph`
 - [x] `nc_param_list_init`
 - [x] `nc_param_list_set_graph`
@@ -200,21 +202,22 @@
 - [x] `vec_sum_f32`
 - [x] `nc_topk`
 
-## Частично реализовано
+## Partial / intentionally simplified
 
-- [~] `nc_new_cuda_device` - логически исправлена: создает compat-устройство `cuda:<index>` вместо буквального `return NULL` из сломанного псевдокода.
-- [~] `nc_new_device` - поддерживает `cpu` и `cuda[:index]`; ветка `cuda` направляется в compat-реализацию.
-- [~] `nc_combine_nodes` - реализована базовая логика, но не весь графовый оптимизатор из `pseudo_code`.
-- [~] `nc_concat_node` - реализовано создание узла и базовое хранение метаданных, но не полный оригинальный wiring.
-- [~] `nc_concat_optimization` - реализована упрощенная оптимизация concat-графа.
-- [~] `nc_node_set_parent` - теперь ближе к псевдокоду по проверкам и refcount, но структура у нас упрощенная.
-- [~] `nc_node_set_arg` - теперь ближе к псевдокоду по проверкам и refcount, но структура у нас упрощенная.
-- [~] `nc_backward` - покрытие расширено, но еще есть ops без полного backward-пути.
-- [x] `nc_pad` / `nc_resize`
-- [~] `nc_save_coefs` / `nc_load_coefs` / `nc_save_state` / `nc_load_state` - формат уже ближе к псевдокоду, но еще без полного покрытия всех крайних случаев оригинала.
-- [~] `nc_sgd_opt_init` / `nc_sgd_opt_set` / `nc_sgd_opt_update` - рабочий SGD-каркас с корректным attach/detach, но без полного набора алгоритмов оригинала.
+- [~] `nc_backward` - working and passes `nctest`, but still not a perfect 1:1 mirror of every original edge case.
+- [~] `nc_combine_nodes` - basic working graph merge logic, not the full original optimizer.
+- [~] `nc_concat_node` - correct for current tests, but still simplified wiring.
+- [~] `nc_concat_optimization` - simplified concat optimization pass.
+- [~] `nc_new_cuda_device` - compatibility stub, not real GPU support.
 
-## Примечание
+## Verification
 
-- Внутренние helpers в `real_code/` не перечисляются отдельно, если они не объявлены в `libnc.h`.
-- Если добавим полноценный CUDA backend, чеклист нужно обновить снова.
+- `nctest.exe -d cpu` passes and prints `all tests success`
+- `matmul_test.exe` passes on the current build
+- `ncspeed.exe` passes on the current build
+- `own_tests.exe` passes on the current build
+
+## Notes
+
+- `nctest.c` is kept logically aligned with `etalon_nctest.c`; differences are limited to diagnostics and the success marker.
+- If we add a real CUDA backend or expand the serialized parameter format, this checklist should be updated together with the code.
