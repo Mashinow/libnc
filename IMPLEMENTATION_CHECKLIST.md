@@ -50,7 +50,7 @@ Note: these helpers do not need a duplicate implementation in `real_code/` becau
 - [x] `nc_context_end`
 - [x] `nc_new_cpu_device`
 - [x] `nc_new_device` for `cpu`
-- [~] `nc_new_cuda_device` - tries external `libnc_cuda.dll`/`libnc_cuda.so` first, then falls back to the compatibility device
+- [~] `nc_new_cuda_device` - searches executable dir, `PATH`, CUDA env vars, and portable overrides (`LIBNC_CUDA_DLL`, `LIBNC_CUDA_DIR`, `LIBNC_CUDA_HOME`) for an external `libnc_cuda.dll`/`libnc_cuda.so`, then falls back to the compatibility device
 - [~] `nc_new_device` for `cuda[:index]` - routes through the CUDA loader hook, then falls back to the compatibility device path
 - [x] `nc_synchronize`
 - [x] `nc_new_tensor_buffer`
