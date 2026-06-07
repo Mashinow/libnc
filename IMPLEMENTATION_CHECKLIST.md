@@ -50,8 +50,8 @@ Note: these helpers do not need a duplicate implementation in `real_code/` becau
 - [x] `nc_context_end`
 - [x] `nc_new_cpu_device`
 - [x] `nc_new_device` for `cpu`
-- [~] `nc_new_cuda_device` - logical compatibility device `cuda:<index>`, not a real CUDA backend
-- [~] `nc_new_device` for `cuda[:index]` - routes to the compatibility device path
+- [~] `nc_new_cuda_device` - tries external `libnc_cuda.dll`/`libnc_cuda.so` first, then falls back to the compatibility device
+- [~] `nc_new_device` for `cuda[:index]` - routes through the CUDA loader hook, then falls back to the compatibility device path
 - [x] `nc_synchronize`
 - [x] `nc_new_tensor_buffer`
 - [x] `nc_dup_tensor_buffer`
@@ -209,8 +209,8 @@ Note: these helpers do not need a duplicate implementation in `real_code/` becau
 - [~] `nc_combine_nodes` - basic working graph merge logic, not the full original optimizer.
 - [~] `nc_concat_node` - correct for current tests, but still simplified wiring.
 - [~] `nc_concat_optimization` - simplified concat optimization pass.
-- [~] `nc_new_cuda_device` - compatibility stub, not real GPU support.
-- [~] `nc_cuda` backend - still absent; the shipped `libnc_cuda.dll` integration is not implemented here.
+- [~] `nc_new_cuda_device` - external backend loader hook exists, but full GPU support is still optional and unverified on Windows.
+- [~] `nc_cuda` backend - separate GPU backend is not bundled here; only the loader hook and compatibility fallback are present.
 
 ## Verification
 

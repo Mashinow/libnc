@@ -15,6 +15,7 @@
 #include "libnc_internal.h"
 #include "libnc_parallel.c"
 #include "libnc_device_helpers.c"
+#include "libnc_cuda_loader.c"
 #include "libnc_graph_helpers.c"
 #include "libnc_param_io.c"
 
@@ -694,6 +695,9 @@ NCDevice *nc_new_cuda_device(NCContext *ctx, int device_index)
 {
     if (!ctx)
         return NULL;
+    NCDevice *d = nc_cuda_backend_create(ctx, device_index);
+    if (d)
+        return d;
     return nc_device_alloc_cuda_compat(ctx, device_index);
 }
 

@@ -8,6 +8,7 @@ This directory contains the maintained implementation split out of the repositor
 - `libnc_internal.h` - internal types, helper prototypes, and cross-module declarations.
 - `libnc_parallel.c` - internal worker-pool and `parallel_for` helper.
 - `libnc_device_helpers.c` - device construction and compatibility helpers.
+- `libnc_cuda_loader.c` - optional external CUDA DLL/SO loader hook.
 - `libnc_graph_helpers.c` - graph merge / concat helpers.
 - `libnc_param_io.c` - parameter/state save-load helpers.
 
@@ -19,6 +20,7 @@ This directory contains the maintained implementation split out of the repositor
 - The runtime has an internal worker pool, but it is only enabled when a context is created with `nb_threads > 1`. The default benchmark path stays single-threaded unless a caller explicitly asks for parallelism.
 - BF16 parameters keep an internal F32 shadow copy during optimizer updates so the update path can preserve more precision than a raw BF16 in-place step.
 - The original binary exposes a job-based parallel layer with pthread primitives; this implementation follows the same spirit with an internal worker pool, but it is still CPU-only.
+- If a matching `libnc_cuda.dll` or `libnc_cuda.so` is present next to the executable, `nc_new_cuda_device()` will try to load `nc_new_cuda_device_internal` from it first and only fall back to the CPU-compatible cuda stub when no backend is available.
 
 ## Build
 
