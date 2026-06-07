@@ -2,6 +2,8 @@
 
 This repository contains a clean-room style reconstruction of `libnc` made from the public header file and decompiled pseudocode. The implementation itself lives in `real_code/`, the shipped tests are in `tests/`, and reverse-engineering references are kept under `decompile/`.
 
+The original `libnc` project was created by Fabrice Bellard. This repository is only a reconstruction effort based on public headers and decompiled material, and all rights to the original project remain with Fabrice Bellard.
+
 ## What is in this repo
 
 - `libnc.c` - single translation unit entry point for the main library build.
