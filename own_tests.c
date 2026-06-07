@@ -219,11 +219,11 @@ static void test_devices_and_buffers(NCContext *ctx, NCDevice *cpu)
     nc_free_tensor_buffer(b);
 }
 
-static void test_cuda_backend(NCContext *ctx, NCDevice *cpu)
+static void test_cuda_tensor_benchmark(NCContext *ctx, NCDevice *cpu)
 {
-    log_stage("cuda_backend");
+    log_stage("cuda_tensor_benchmark");
     if (!nc_cuda_backend_available()) {
-        fprintf(stderr, "[own_tests] cuda backend unavailable, compat fallback only\n");
+        fprintf(stderr, "[own_tests] cuda backend unavailable, skipping tensor acceleration benchmark\n");
         fflush(stderr);
         return;
     }
@@ -231,38 +231,85 @@ static void test_cuda_backend(NCContext *ctx, NCDevice *cpu)
     NCDevice *cuda = nc_new_cuda_device(ctx, 0);
     check(cuda != NULL, "cuda backend device");
 
-    size_t n = 1u << 18;
-    NCTensor *a = nc_new_tensor_1d(cpu, NC_TYPE_F32, n);
-    NCTensor *b = nc_new_tensor_1d(cpu, NC_TYPE_F32, n);
-    fill_seq_f32_1d(a, 1.0f, 0.001f);
-    fill_seq_f32_1d(b, 2.0f, -0.002f);
+    {
+        size_t n = 1u << 20;
+        NCTensor *a = nc_new_tensor_1d(cpu, NC_TYPE_F32, n);
+        NCTensor *b = nc_new_tensor_1d(cpu, NC_TYPE_F32, n);
+        fill_seq_f32_1d(a, 1.0f, 0.001f);
+        fill_seq_f32_1d(b, 2.0f, -0.002f);
 
-    uint64_t cpu_cycles0 = get_cycles();
-    NCTensor *cpu_res = nc_add(nc_new_tensor_from_tensor(a), nc_new_tensor_from_tensor(b));
-    nc_synchronize(cpu);
-    uint64_t cpu_cycles = get_cycles() - cpu_cycles0;
+        uint64_t cpu_cycles0 = get_cycles();
+        NCTensor *cpu_res = nc_add(nc_new_tensor_from_tensor(a), nc_new_tensor_from_tensor(b));
+        nc_synchronize(cpu);
+        uint64_t cpu_cycles = get_cycles() - cpu_cycles0;
 
-    NCTensor *a_cuda = nc_tensor_to_device(nc_new_tensor_from_tensor(a), cuda);
-    NCTensor *b_cuda = nc_tensor_to_device(nc_new_tensor_from_tensor(b), cuda);
-    uint64_t cuda_cycles0 = get_cycles();
-    NCTensor *cuda_res = nc_add(nc_dup_tensor(a_cuda), nc_dup_tensor(b_cuda));
-    nc_synchronize(cuda);
-    uint64_t cuda_cycles = get_cycles() - cuda_cycles0;
+        NCTensor *a_cuda = nc_tensor_to_device(nc_new_tensor_from_tensor(a), cuda);
+        NCTensor *b_cuda = nc_tensor_to_device(nc_new_tensor_from_tensor(b), cuda);
+        uint64_t cuda_cycles0 = get_cycles();
+        NCTensor *cuda_res = nc_add(nc_dup_tensor(a_cuda), nc_dup_tensor(b_cuda));
+        nc_synchronize(cuda);
+        uint64_t cuda_cycles = get_cycles() - cuda_cycles0;
 
-    NCTensor *cuda_cpu = nc_tensor_to_cpu_device(nc_dup_tensor(cuda_res));
-    expect_tensor_f32_same(cuda_cpu, cpu_res, 1e-5f, "cuda add");
-    fprintf(stderr, "[own_tests] cuda bench add cpu_cycles=%llu cuda_cycles=%llu\n",
-            (unsigned long long)cpu_cycles,
-            (unsigned long long)cuda_cycles);
-    fflush(stderr);
+        NCTensor *cuda_cpu = nc_tensor_to_cpu_device(nc_dup_tensor(cuda_res));
+        expect_tensor_f32_same(cuda_cpu, cpu_res, 1e-5f, "cuda add");
+        fprintf(stderr, "[own_tests] cuda tensor bench add cpu_cycles=%llu cuda_cycles=%llu speedup=%0.3f\n",
+                (unsigned long long)cpu_cycles,
+                (unsigned long long)cuda_cycles,
+                cuda_cycles ? (double)cpu_cycles / (double)cuda_cycles : 0.0);
+        fflush(stderr);
 
-    nc_free_tensor(cuda_cpu);
-    nc_free_tensor(cuda_res);
-    nc_free_tensor(b_cuda);
-    nc_free_tensor(a_cuda);
-    nc_free_tensor(cpu_res);
-    nc_free_tensor(b);
-    nc_free_tensor(a);
+        nc_free_tensor(cuda_cpu);
+        nc_free_tensor(cuda_res);
+        nc_free_tensor(b_cuda);
+        nc_free_tensor(a_cuda);
+        nc_free_tensor(cpu_res);
+        nc_free_tensor(b);
+        nc_free_tensor(a);
+    }
+
+    {
+        const size_t m = 256;
+        const size_t k = 256;
+        const size_t n = 256;
+        NCTensor *w = nc_new_tensor_2d(cpu, NC_TYPE_F32, m, k);
+        NCTensor *x = nc_new_tensor_2d(cpu, NC_TYPE_F32, k, n);
+        for (size_t i = 0; i < m; i++) {
+            for (size_t j = 0; j < k; j++)
+                set_f32_2d(w, i, j, (float)((i + j) % 17) * 0.01f + 0.1f);
+        }
+        for (size_t i = 0; i < k; i++) {
+            for (size_t j = 0; j < n; j++)
+                set_f32_2d(x, i, j, (float)((i * 3 + j * 7) % 19) * 0.02f + 0.05f);
+        }
+
+        uint64_t cpu_cycles0 = get_cycles();
+        NCTensor *cpu_mm = nc_matmul(nc_new_tensor_from_tensor(w), nc_new_tensor_from_tensor(x));
+        nc_synchronize(cpu);
+        uint64_t cpu_cycles = get_cycles() - cpu_cycles0;
+
+        NCTensor *w_cuda = nc_tensor_to_device(nc_new_tensor_from_tensor(w), cuda);
+        NCTensor *x_cuda = nc_tensor_to_device(nc_new_tensor_from_tensor(x), cuda);
+        uint64_t cuda_cycles0 = get_cycles();
+        NCTensor *cuda_mm = nc_matmul(nc_dup_tensor(w_cuda), nc_dup_tensor(x_cuda));
+        nc_synchronize(cuda);
+        uint64_t cuda_cycles = get_cycles() - cuda_cycles0;
+
+        NCTensor *cuda_mm_cpu = nc_tensor_to_cpu_device(nc_dup_tensor(cuda_mm));
+        expect_tensor_f32_same(cuda_mm_cpu, cpu_mm, 1e-3f, "cuda matmul");
+        fprintf(stderr, "[own_tests] cuda tensor bench matmul cpu_cycles=%llu cuda_cycles=%llu speedup=%0.3f\n",
+                (unsigned long long)cpu_cycles,
+                (unsigned long long)cuda_cycles,
+                cuda_cycles ? (double)cpu_cycles / (double)cuda_cycles : 0.0);
+        fflush(stderr);
+
+        nc_free_tensor(cuda_mm_cpu);
+        nc_free_tensor(cuda_mm);
+        nc_free_tensor(x_cuda);
+        nc_free_tensor(w_cuda);
+        nc_free_tensor(cpu_mm);
+        nc_free_tensor(x);
+        nc_free_tensor(w);
+    }
 }
 
 static void test_tensor_basics(NCContext *ctx, NCDevice *cpu, NCDevice *cuda)
@@ -900,7 +947,7 @@ int main(void)
     test_runtime(ctx);
     log_stage("devices_and_buffers");
     test_devices_and_buffers(ctx, cpu);
-    test_cuda_backend(ctx, cpu);
+    test_cuda_tensor_benchmark(ctx, cpu);
     log_stage("tensor_basics");
     test_tensor_basics(ctx, cpu, cuda);
     log_stage("elementwise");
