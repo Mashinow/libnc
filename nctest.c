@@ -245,6 +245,9 @@ static void test_approx_gradient(NCContext *s, GradientTestFunc *func,
             }
 
             x0 = nc_get1_f32(x, d->n_dims, tab_pos);
+            fprintf(stderr, "[nctest] gradcheck param=%s idx=%zu stage=fd_plus\n",
+                    p->name, param_idx);
+            fflush(stderr);
 
             /* approx gradient = (f(x0+eps)-f(x0-eps))/(2*eps) */
             nc_set1_f32(x, d->n_dims, tab_pos, x0 + eps);
@@ -252,6 +255,9 @@ static void test_approx_gradient(NCContext *s, GradientTestFunc *func,
             y1 = nc_get_scalar_f32(loss);
             nc_free_tensor(loss);
             
+            fprintf(stderr, "[nctest] gradcheck param=%s idx=%zu stage=fd_minus\n",
+                    p->name, param_idx);
+            fflush(stderr);
             nc_set1_f32(x, d->n_dims, tab_pos, x0 - eps);
             loss = func(opaque);
             y0 = nc_get_scalar_f32(loss);
@@ -272,6 +278,9 @@ static void test_approx_gradient(NCContext *s, GradientTestFunc *func,
                 }
             }
             
+            fprintf(stderr, "[nctest] gradcheck param=%s idx=%zu stage=backward\n",
+                    p->name, param_idx);
+            fflush(stderr);
             loss = func(opaque);
             grad0 = nc_new_f32(nc_get_tensor_device(loss), 1.0);
             if (use_bf16) {
@@ -279,25 +288,49 @@ static void test_approx_gradient(NCContext *s, GradientTestFunc *func,
             }
             nc_backward(loss, grad0, backward_save_grad, 0);
             nc_free_tensor(loss);
+            fprintf(stderr, "[nctest] gradcheck param=%s idx=%zu stage=after_backward\n",
+                    p->name, param_idx);
+            fflush(stderr);
             
+            fprintf(stderr, "[nctest] gradcheck param=%s idx=%zu stage=read_saved_grad\n",
+                    p->name, param_idx);
+            fflush(stderr);
             g = nc_get1_f32(p->saved_grad, d->n_dims, tab_pos);
+            fprintf(stderr, "[nctest] gradcheck param=%s idx=%zu stage=read_saved_grad_done\n",
+                    p->name, param_idx);
+            fflush(stderr);
 
             if (use_bf16) {
                 /* restore the original parameters */
+                fprintf(stderr, "[nctest] gradcheck param=%s idx=%zu stage=restore_bf16\n",
+                        p->name, param_idx);
+                fflush(stderr);
                 list_for_each(el1, &param_list->param_list) {
                     p1 = list_entry(el1, NCParam, link);
                     nc_free_tensor(*p1->pval);
                     *p1->pval = p1->low_part;
                     p1->low_part = NULL;
                 }
+                fprintf(stderr, "[nctest] gradcheck param=%s idx=%zu stage=restore_bf16_done\n",
+                        p->name, param_idx);
+                fflush(stderr);
             }
 
             /* free the computed gradients */
+            fprintf(stderr, "[nctest] gradcheck param=%s idx=%zu stage=free_saved_grads\n",
+                    p->name, param_idx);
+            fflush(stderr);
             list_for_each(el1, &param_list->param_list) {
                 p1 = list_entry(el1, NCParam, link);
+                fprintf(stderr, "[nctest] gradcheck param=%s idx=%zu stage=free_saved_grad param=%s\n",
+                        p->name, param_idx, p1->name);
+                fflush(stderr);
                 nc_free_tensor(p1->saved_grad);
                 p1->saved_grad = NULL;
             }
+            fprintf(stderr, "[nctest] gradcheck param=%s idx=%zu stage=free_saved_grads_done\n",
+                    p->name, param_idx);
+            fflush(stderr);
             error = fabs(g_approx - g);
             if (g != 0) {
                 rel_error = fabsf((g_approx - g) / g);
@@ -316,6 +349,11 @@ static void test_approx_gradient(NCContext *s, GradientTestFunc *func,
                 printf("%10s %6d %+10.2e %+10.2e %+10.2e %10.2e %10.2e\n",
                        p->name, (int)param_idx, x0, g_approx, g, error,
                        rel_error);
+                if (is_error) {
+                    printf("    detail %s[%d] val=%+.9e g_approx=%+.9e g_backprop=%+.9e error=%+.9e rel_error=%+.9e\n",
+                           p->name, (int)param_idx, x0, g_approx, g, error, rel_error);
+                    printf("    fd y1=%+.9e y0=%+.9e eps=%+.9e\n", y1, y0, eps);
+                }
                 if (is_error)
                     exit(1);
             }
@@ -623,6 +661,9 @@ static __unused void nc_test_approx_gradient_op(NCContext *s, NCDevice *dev,
     int j;
     
     printf("Testing %s (%s)\n", gd->name, gd->use_bf16 ? "bf16" : "f32");
+    fprintf(stderr, "[nctest] approx_gradient_op name=%s type=%s\n",
+            gd->name, gd->use_bf16 ? "bf16" : "f32");
+    fflush(stderr);
 
     gs->s = s;
 
@@ -697,6 +738,9 @@ static __unused void nc_test_approx_gradient_op(NCContext *s, NCDevice *dev,
     test_approx_gradient(s, my_test_func, gs, &param_list,
                          gd->eps, gd->error_max, gd->rel_error_max,
                          verbose, gd->use_bf16);
+    fprintf(stderr, "[nctest] approx_gradient_op done name=%s type=%s\n",
+            gd->name, gd->use_bf16 ? "bf16" : "f32");
+    fflush(stderr);
 
     for(j = 0; j < gd->n_args; j++) {
         if (gd->args[j].item_type != NC_TYPE_F32) {

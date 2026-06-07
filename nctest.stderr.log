@@ -1,0 +1,4 @@
+[nctest] init_context
+[nctest] create_device
+[nctest] basic_test
+Assertion failed: res == (float)(n * (n + 1) / 2), file nctest.c, line 786
