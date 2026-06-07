@@ -1510,38 +1510,85 @@ void nc_hsplit(NCTensor **tab_y, NCTensor *x, int n_outputs, const size_t *tab_s
     nc_split(tab_y, x, n_outputs, tab_size, 1);
 }
 
+static void pad_copy_row(NCTensor *dst, size_t dst_row, const NCTensor *src, size_t src_row)
+{
+    size_t row_bytes = src->strides[0];
+    memcpy((uint8_t *)tensor_data_ptr(dst) + dst_row * dst->strides[0],
+           (const uint8_t *)tensor_const_data_ptr(src) + src_row * src->strides[0],
+           row_bytes);
+}
+
+static void pad_zero_row(NCTensor *dst, size_t dst_row)
+{
+    memset((uint8_t *)tensor_data_ptr(dst) + dst_row * dst->strides[0], 0, dst->strides[0]);
+}
+
+static void pad_add_row(NCTensor *dst, size_t dst_row, const NCTensor *src, size_t src_row)
+{
+    uint8_t *db = (uint8_t *)tensor_data_ptr(dst) + dst_row * dst->strides[0];
+    const uint8_t *sb = (const uint8_t *)tensor_const_data_ptr(src) + src_row * src->strides[0];
+    size_t row_bytes = dst->strides[0];
+    for (size_t off = 0; off < row_bytes; off += dst->item_size) {
+        float dv = nc_load_f32(db + off, dst->item_type);
+        float sv = nc_load_f32(sb + off, src->item_type);
+        nc_store_f32(db + off, dst->item_type, dv + sv);
+    }
+}
+
 static NCTensor *pad_resize(NCTensor *x, ssize_t left_len, NCPadEnum left_op,
                             ssize_t right_len, NCPadEnum right_op)
 {
-    (void)left_op;
-    (void)right_op;
-    size_t new_len = x->dims[0];
-    ssize_t start = 0;
-    if (left_len < 0) {
-        start = -left_len;
-        if ((size_t)start > x->dims[0])
-            start = x->dims[0];
-        new_len = x->dims[0] - (size_t)start;
-    } else {
-        new_len = x->dims[0] + (size_t)left_len + (right_len > 0 ? (size_t)right_len : 0);
-    }
+    if (!x->is_contiguous)
+        x = nc_make_contiguous(x);
+    size_t left_pad = left_len > 0 ? (size_t)left_len : 0;
+    size_t right_pad = right_len > 0 ? (size_t)right_len : 0;
+    size_t left_trim = left_len < 0 ? (size_t)(-left_len) : 0;
+    size_t right_trim = right_len < 0 ? (size_t)(-right_len) : 0;
+    if (left_trim + right_trim >= x->dims[0])
+        nc_error("pad");
+    size_t keep = x->dims[0] - left_trim - right_trim;
+    size_t new_len = keep + left_pad + right_pad;
+    if (new_len == 0)
+        nc_error("pad");
     size_t dims[NC_N_DIMS_MAX];
     for (int i = 0; i < x->n_dims; i++)
         dims[i] = x->dims[i];
     dims[0] = new_len;
     NCTensor *y = nc_new_tensor(x->device, x->item_type, x->n_dims, dims);
     tensor_fill_zero(y);
-    size_t copy_start = left_len > 0 ? (size_t)left_len : 0;
-    size_t copy_len = x->dims[0];
-    if (left_len < 0)
-        copy_len -= (size_t)(-left_len);
-    if (right_len < 0 && copy_len > (size_t)(-right_len))
-        copy_len -= (size_t)(-right_len);
-    NCTensor *sl = nc_slice_alias(y, 0, copy_start, copy_start + copy_len);
-    NCTensor *sx = nc_slice_alias(x, 0, (size_t)(start > 0 ? start : 0), (size_t)(start > 0 ? start : 0) + copy_len);
-    nc_tensor_copy(sl, sx);
-    nc_free_tensor(sl);
-    nc_free_tensor(sx);
+
+    size_t out_row = 0;
+    if (left_pad) {
+        if (left_op == NC_PAD_DUP && keep > 0) {
+            for (size_t i = 0; i < left_pad; i++)
+                pad_copy_row(y, out_row++, x, left_trim);
+        } else {
+            out_row += left_pad;
+        }
+    }
+
+    for (size_t i = 0; i < keep; i++)
+        pad_copy_row(y, out_row + i, x, left_trim + i);
+
+    if (left_trim && left_op == NC_TRIM_SUM) {
+        for (size_t i = 0; i < left_trim; i++)
+            pad_add_row(y, left_pad, x, i);
+    }
+    if (right_trim && right_op == NC_TRIM_SUM) {
+        for (size_t i = 0; i < right_trim; i++)
+            pad_add_row(y, left_pad + keep - 1, x, x->dims[0] - right_trim + i);
+    }
+
+    out_row = left_pad + keep;
+    if (right_pad) {
+        if (right_op == NC_PAD_DUP && keep > 0) {
+            for (size_t i = 0; i < right_pad; i++)
+                pad_copy_row(y, out_row + i, x, left_trim + keep - 1);
+        } else {
+            for (size_t i = 0; i < right_pad; i++)
+                pad_zero_row(y, out_row + i);
+        }
+    }
     return y;
 }
 
@@ -2499,29 +2546,40 @@ static void backward_tensor(NCTensor *x, NCTensor *grad, NCParamUpdateFunc *para
         if (src->n_dims > 0) {
             ssize_t left_len = (ssize_t)x->node->start;
             ssize_t right_len = (ssize_t)x->node->end;
+            NCPadEnum left_op = (NCPadEnum)x->node->value;
+            NCPadEnum right_op = (NCPadEnum)x->node->fvalue;
             size_t src_start = left_len < 0 ? (size_t)(-left_len) : 0;
             size_t dst_start = left_len > 0 ? (size_t)left_len : 0;
-            size_t copy_len = src->dims[0] - src_start;
-            if (right_len < 0 && copy_len > (size_t)(-right_len))
-                copy_len -= (size_t)(-right_len);
-            if (x->n_dims == 1) {
-                for (size_t i = 0; i < copy_len && dst_start + i < grad->dims[0]; i++) {
-                    float gv = nc_load_f32((const uint8_t *)tensor_const_data_ptr(grad) + (dst_start + i) * grad->item_size, grad->item_type);
-                    nc_store_f32((uint8_t *)tensor_data_ptr(g0) + (src_start + i) * g0->item_size, g0->item_type, gv);
-                }
-            } else {
-                size_t inner = 1;
-                for (int d = 1; d < src->n_dims; d++)
-                    inner *= src->dims[d];
-                size_t src_off = src_start * inner;
-                size_t dst_off = dst_start * inner;
-                for (size_t i = 0; i < copy_len; i++) {
-                    size_t so = src_off + i * inner;
-                    size_t dof = dst_off + i * inner;
-                    memcpy((uint8_t *)tensor_data_ptr(g0) + so * g0->item_size,
-                           (const uint8_t *)tensor_const_data_ptr(grad) + dof * grad->item_size,
-                           inner * g0->item_size);
-                }
+            size_t left_pad = left_len > 0 ? (size_t)left_len : 0;
+            size_t right_pad = right_len > 0 ? (size_t)right_len : 0;
+            size_t left_trim = left_len < 0 ? (size_t)(-left_len) : 0;
+            size_t right_trim = right_len < 0 ? (size_t)(-right_len) : 0;
+            size_t keep = src->dims[0] - left_trim - right_trim;
+            for (size_t i = 0; i < keep; i++) {
+                size_t srow = src_start + i;
+                size_t drow = dst_start + i;
+                memcpy((uint8_t *)tensor_data_ptr(g0) + srow * g0->strides[0],
+                       (const uint8_t *)tensor_const_data_ptr(grad) + drow * grad->strides[0],
+                       g0->strides[0]);
+            }
+            if (left_pad && left_op == NC_PAD_DUP) {
+                for (size_t i = 0; i < left_pad; i++)
+                    pad_add_row(g0, src_start, grad, i);
+            }
+            if (right_pad && right_op == NC_PAD_DUP) {
+                size_t grow = dst_start + keep;
+                for (size_t i = 0; i < right_pad; i++)
+                    pad_add_row(g0, src_start + keep - 1, grad, grow + i);
+            }
+            if (left_trim && left_op == NC_TRIM_SUM) {
+                size_t grow = dst_start;
+                for (size_t i = 0; i < left_trim; i++)
+                    pad_add_row(g0, i, grad, grow);
+            }
+            if (right_trim && right_op == NC_TRIM_SUM) {
+                size_t grow = dst_start + keep - 1;
+                for (size_t i = 0; i < right_trim; i++)
+                    pad_add_row(g0, src->dims[0] - right_trim + i, grad, grow);
             }
         }
         backward_tensor(src, g0, param_update_func, flags);

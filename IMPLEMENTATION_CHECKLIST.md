@@ -210,7 +210,7 @@
 - [~] `nc_node_set_parent` - теперь ближе к псевдокоду по проверкам и refcount, но структура у нас упрощенная.
 - [~] `nc_node_set_arg` - теперь ближе к псевдокоду по проверкам и refcount, но структура у нас упрощенная.
 - [~] `nc_backward` - покрытие расширено, но еще есть ops без полного backward-пути.
-- [~] `nc_pad` / `nc_resize` - базовый граф и backward есть, но режимы `PAD_DUP` / `TRIM_SUM` еще не закрыты.
+- [x] `nc_pad` / `nc_resize`
 - [~] `nc_save_coefs` / `nc_load_coefs` / `nc_save_state` / `nc_load_state` - формат уже ближе к псевдокоду, но еще без полного покрытия всех крайних случаев оригинала.
 - [~] `nc_sgd_opt_init` / `nc_sgd_opt_set` / `nc_sgd_opt_update` - рабочий SGD-каркас с корректным attach/detach, но без полного набора алгоритмов оригинала.
 
