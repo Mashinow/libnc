@@ -91,7 +91,7 @@ static void aligned_free(void *ptr)
 #endif
 }
 
-void nc_error(char *format, ...)
+_Noreturn void nc_error(char *format, ...)
 {
     va_list ap;
     va_start(ap, format);
@@ -511,6 +511,8 @@ static void context_untrack_node(NCNode *n)
 
 static NCTensor *tensor_alloc_base(NCDevice *d, NCTypeEnum type, int n_dims, const size_t *dims)
 {
+    if (!d || !d->context)
+        nc_error("device is required");
     NCContext *ctx = d->context;
     NCTensor *t = nc_mallocz(sizeof(*t));
     t->ref_count = 1;
@@ -528,6 +530,8 @@ static NCTensor *tensor_alloc_base(NCDevice *d, NCTypeEnum type, int n_dims, con
 
 static NCTensorBuffer *buffer_alloc_base(NCDevice *d, size_t size)
 {
+    if (!d || !d->context)
+        nc_error("device is required");
     NCContext *ctx = d->context;
     NCTensorBuffer *b = nc_mallocz(sizeof(*b));
     b->ref_count = 1;
@@ -738,6 +742,8 @@ NCTensorBuffer *nc_new_tensor_buffer(NCDevice *d, size_t size)
 
 NCTensorBuffer *nc_dup_tensor_buffer(const NCTensorBuffer *b)
 {
+    if (!b)
+        nc_error("buffer is required");
     ((NCTensorBuffer *)b)->ref_count++;
     return (NCTensorBuffer *)b;
 }
@@ -776,6 +782,10 @@ NCTensor *nc_new_tensor_from_buffer(NCDevice *d, NCTensorBuffer *b, NCTypeEnum t
                                     int n_dims, const size_t *dims, size_t byte_offset,
                                     const size_t *strides)
 {
+    if (!d || !d->context)
+        nc_error("device is required");
+    if (!b)
+        nc_error("buffer is required");
     NCTensor *t = nc_mallocz(sizeof(*t));
     t->ref_count = 1;
     t->context = d->context;
@@ -1377,6 +1387,8 @@ NCDevice *nc_get_tensor_device(const NCTensor *x)
 
 NCTensor *nc_tensor_to_device(NCTensor *x, NCDevice *d)
 {
+    if (!x || !d)
+        nc_error("tensor and device are required");
     if (x->device == d)
         return x;
     NCTensor *y = nc_new_tensor_nz(d, x->item_type, x->n_dims, x->dims);
@@ -1389,13 +1401,19 @@ NCTensor *nc_tensor_to_device(NCTensor *x, NCDevice *d)
 
 NCTensor *nc_tensor_to_cpu_device(NCTensor *x)
 {
+    if (!x || !x->context || !x->context->cpu_device)
+        nc_error("tensor context is required");
     return nc_tensor_to_device(x, x->context->cpu_device);
 }
 
 NCTensor *nc_convert(NCTensor *x, NCTypeEnum new_type)
 {
+    if (!x)
+        nc_error("tensor is required");
     if (x->item_type == new_type)
         return nc_dup_tensor(x);
+    if (!x->device)
+        nc_error("tensor device is required");
     if (x->device && x->device->ops && x->device->ops->convert && x->is_contiguous) {
         NCTensor *y = x->device->ops->convert(x->device, x, new_type);
         if (y) {
@@ -1426,6 +1444,8 @@ static float fn_max(float a, float b, void *opaque) { (void)opaque; return a > b
 
 static NCTensor *tensor_binary_same_shape(NCTensor *a, NCTensor *b, float (*fn)(float, float, void *), NCOp op)
 {
+    if (!a || !b || !a->device || !b->device)
+        nc_error("all operation tensors must be on the same device");
     if (a->device != b->device)
         nc_error("all operation tensors must be on the same device");
     if (a->item_type != b->item_type || a->item_type > NC_TYPE_BF16)
@@ -1543,6 +1563,8 @@ NCTensor *nc_max(NCTensor *x1, NCTensor *x2)
 
 NCTensor *nc_neg(NCTensor *x)
 {
+    if (!x || !x->device)
+        nc_error("tensor is required");
     if (x->device && x->device->ops && x->device->ops->unary &&
         x->item_type == NC_TYPE_F32 && x->is_contiguous) {
         NCTensor *y = x->device->ops->unary(x->device, NC_OP_NEG, x);
@@ -1565,6 +1587,8 @@ NCTensor *nc_neg(NCTensor *x)
 
 NCTensor *nc_recip(NCTensor *x)
 {
+    if (!x || !x->device)
+        nc_error("tensor is required");
     if (x->device && x->device->ops && x->device->ops->unary &&
         x->item_type == NC_TYPE_F32 && x->is_contiguous) {
         NCTensor *y = x->device->ops->unary(x->device, NC_OP_RECIP, x);
@@ -1587,6 +1611,8 @@ NCTensor *nc_recip(NCTensor *x)
 
 NCTensor *nc_select(NCTensor *z, NCTensor *x1, NCTensor *x2)
 {
+    if (!z || !x1 || !x2 || !x1->device)
+        nc_error("tensors are required");
     if (z->n_dims != x1->n_dims || z->n_dims != x2->n_dims)
         nc_error("same_dims");
     for (int i = 0; i < z->n_dims; i++)
@@ -1608,6 +1634,8 @@ NCTensor *nc_select(NCTensor *z, NCTensor *x1, NCTensor *x2)
 
 NCTensor *nc_masked_fill(NCTensor *x, NCTensor *mask, float c, BOOL mask_inv)
 {
+    if (!x || !mask || !x->device || !mask->device)
+        nc_error("tensors are required");
     if (x->device && x->device == mask->device && x->device->ops && x->device->ops->masked_fill &&
         x->item_type == NC_TYPE_F32 && mask->item_type == NC_TYPE_F32 &&
         x->is_contiguous && mask->is_contiguous) {
