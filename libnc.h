@@ -111,7 +111,6 @@ void nc_context_end(NCContext *m);
 
 NCDevice *nc_new_cpu_device(NCContext *m);
 NCDevice *nc_new_cuda_device(NCContext *m, int device_index);
-BOOL nc_cuda_backend_available(void);
 NCDevice *nc_new_device(NCContext *m, const char *device_name);
 void nc_synchronize(NCDevice *d);
 

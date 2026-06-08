@@ -326,9 +326,3 @@ static NCDevice *nc_cuda_backend_create(NCContext *ctx, int device_index)
         return NULL;
     return nc_cuda_new_device_internal(ctx, (unsigned int)device_index);
 }
-
-BOOL nc_cuda_backend_available(void)
-{
-    nc_cuda_loader_init();
-    return nc_cuda_new_device_internal != NULL;
-}

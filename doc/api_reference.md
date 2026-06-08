@@ -75,7 +75,6 @@ Important enums and helper types:
 | `void nc_context_end(NCContext *m)` | void | Destroys the context and frees all owned runtime state. |
 | `NCDevice *nc_new_cpu_device(NCContext *m)` | `NCDevice *` | Creates the CPU device for a context. |
 | `NCDevice *nc_new_cuda_device(NCContext *m, int device_index)` | `NCDevice *` | Creates a CUDA device or a compatibility fallback device. |
-| `BOOL nc_cuda_backend_available(void)` | `BOOL` | Returns whether a real external CUDA backend was discovered. |
 | `NCDevice *nc_new_device(NCContext *m, const char *device_name)` | `NCDevice *` | Parses a device name such as `cpu` or `cuda:0`. |
 | `void nc_synchronize(NCDevice *d)` | void | Waits for pending device work to finish. |
 | `NCTensorBuffer *nc_new_tensor_buffer(NCDevice *d, size_t size)` | `NCTensorBuffer *` | Allocates a tensor buffer on a device. |

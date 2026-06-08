@@ -222,12 +222,6 @@ static void test_devices_and_buffers(NCContext *ctx, NCDevice *cpu)
 static void test_cuda_tensor_benchmark(NCContext *ctx, NCDevice *cpu)
 {
     log_stage("cuda_tensor_benchmark");
-    if (!nc_cuda_backend_available()) {
-        fprintf(stderr, "[own_tests] cuda backend unavailable, skipping tensor acceleration benchmark\n");
-        fflush(stderr);
-        return;
-    }
-
     NCDevice *cuda = nc_new_cuda_device(ctx, 0);
     check(cuda != NULL, "cuda backend device");
 
