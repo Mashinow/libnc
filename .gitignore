@@ -18,3 +18,8 @@ matmul_test.txt
 *.tgz
 release_stage/
 .verify_tmp/
+*.so
+matmul_test
+ncspeed
+nctest
+own_test
