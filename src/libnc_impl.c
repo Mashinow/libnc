@@ -9,6 +9,9 @@
 
 #ifdef _WIN32
 #include <malloc.h>
+#endif
+
+#if defined(_WIN32) || defined(__SSE__)
 #include <xmmintrin.h>
 #endif
 

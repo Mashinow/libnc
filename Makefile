@@ -27,6 +27,7 @@ ALL_TARGETS := $(SHLIB) $(CUDA_LIB) $(TEST_BINS)
 else
 EXEEXT :=
 SHLIB := libnc.so
+CUDA_LIB := libnc_cuda.so
 TEST_BINS := nctest matmul_test ncspeed own_tests
 RUN_ENV := LD_LIBRARY_PATH=.
 RUN_NCTEST := ./nctest -d cpu
@@ -46,7 +47,7 @@ cuda:
 ifeq ($(OS),Windows_NT)
 	$(MAKE) $(CUDA_LIB)
 else
-	@echo "CUDA backend source in this repository is Windows-targeted."
+	$(MAKE) $(CUDA_LIB)
 endif
 
 tests: $(TEST_BINS)
@@ -77,6 +78,9 @@ endif
 ifeq ($(OS),Windows_NT)
 $(CUDA_LIB): $(SHLIB) src/libnc_cuda_backend.c src/libnc_internal.h libnc.h cutils.h list.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -shared -o $@ src/libnc_cuda_backend.c -L. -lnc -Wl,--out-implib,$(CUDA_IMPLIB)
+else
+$(CUDA_LIB): $(SHLIB) src/libnc_cuda_backend_linux.c src/libnc_cuda_backend.c src/libnc_internal.h libnc.h cutils.h list.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC -shared -o $@ src/libnc_cuda_backend_linux.c -L. -lnc -lpthread -ldl -lm
 endif
 
 ifeq ($(OS),Windows_NT)

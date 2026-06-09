@@ -2,6 +2,8 @@
 #define CUTILS_H
 
 #include <inttypes.h>
+#include <stddef.h>
+#include <sys/types.h>
 
 #define force_inline inline __attribute__((always_inline))
 #define no_inline __attribute__((noinline))

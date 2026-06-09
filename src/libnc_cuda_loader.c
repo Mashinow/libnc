@@ -19,6 +19,17 @@ static int nc_cuda_path_is_sep(char c)
     return c == '\\' || c == '/';
 }
 
+static void nc_cuda_copy_dirname(char *dst, size_t dst_size, const char *path)
+{
+    size_t len = strlen(path);
+    while (len > 0 && nc_cuda_path_is_sep(path[len - 1]))
+        len--;
+    if (len >= dst_size)
+        len = dst_size - 1;
+    memcpy(dst, path, len);
+    dst[len] = '\0';
+}
+
 static char *nc_cuda_strdup(const char *s)
 {
     size_t len = strlen(s) + 1;
@@ -52,17 +63,6 @@ static void nc_cuda_join_path(char *dst, size_t dst_size, const char *dir, const
         memcpy(dst + len, leaf, leaf_len);
         len += leaf_len;
     }
-    dst[len] = '\0';
-}
-
-static void nc_cuda_copy_dirname(char *dst, size_t dst_size, const char *path)
-{
-    size_t len = strlen(path);
-    while (len > 0 && nc_cuda_path_is_sep(path[len - 1]))
-        len--;
-    if (len >= dst_size)
-        len = dst_size - 1;
-    memcpy(dst, path, len);
     dst[len] = '\0';
 }
 

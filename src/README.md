@@ -9,7 +9,8 @@ This directory contains the maintained implementation split out of the repositor
 - `libnc_parallel.c` - internal worker-pool and `parallel_for` helper.
 - `libnc_device_helpers.c` - device construction and compatibility helpers.
 - `libnc_cuda_loader.c` - optional external CUDA DLL/SO loader hook.
-- `libnc_cuda_backend.c` - real CUDA backend source that exports `nc_new_cuda_device_internal`.
+- `libnc_cuda_backend.c` - platform-neutral CUDA backend source that exports `nc_new_cuda_device_internal`.
+- `libnc_cuda_backend_linux.c` - Linux entry point that pulls in the shared CUDA backend implementation.
 - `libnc_graph_helpers.c` - graph merge / concat helpers.
 - `libnc_param_io.c` - parameter/state save-load helpers.
 
@@ -18,7 +19,7 @@ This directory contains the maintained implementation split out of the repositor
 - The shipped tests in `tests/nctest.c` pass on the current build and print `all tests success`.
 - `tests/matmul_test.c`, `tests/ncspeed.c`, and `tests/own_tests.c` also pass on the current build.
 - `tests/nctest.c` is logically aligned with `decompile/etalon_nctest.c`; the differences are diagnostic logging and the explicit success marker.
-- `tests/own_tests.c` now benchmarks actual CUDA tensor ops through `libnc_cuda.dll`; on the current machine, `matmul` shows a clear speedup while `add` remains mostly transfer-bound.
+- `tests/own_tests.c` now benchmarks actual CUDA tensor ops through the optional CUDA backend; on the current machine, `matmul` shows a clear speedup while `add` remains mostly transfer-bound.
 - The runtime has an internal worker pool, but it is only enabled when a context is created with `nb_threads > 1`. The default benchmark path stays single-threaded unless a caller explicitly asks for parallelism.
 - BF16 parameters keep an internal F32 shadow copy during optimizer updates so the update path can preserve more precision than a raw BF16 in-place step.
 - The original binary exposes a job-based parallel layer with pthread primitives; this implementation follows the same spirit with an internal worker pool, but it is still CPU-only.

@@ -84,7 +84,7 @@ gcc -std=gnu11 -O2 -I. -shared -o libnc_cuda.dll src/libnc_cuda_backend.c -L. -l
 On Linux or WSL, build the CUDA backend shared object instead:
 
 ```bash
-gcc -std=gnu11 -O2 -fPIC -I. -shared -o libnc_cuda.so src/libnc_cuda_backend.c -L. -lnc -lpthread -ldl -lm
+gcc -std=gnu11 -O2 -fPIC -I. -shared -o libnc_cuda.so src/libnc_cuda_backend_linux.c -L. -lnc -lpthread -ldl -lm
 ```
 
 Build the tests from the repository root:

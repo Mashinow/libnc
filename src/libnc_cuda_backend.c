@@ -9,14 +9,28 @@
 
 #ifdef _WIN32
 #include <windows.h>
-#endif
-
-#ifndef _WIN32
-#error "libnc_cuda_backend.c currently targets Windows loader/runtime discovery"
+#else
+#include <dlfcn.h>
+#include <dirent.h>
+#include <fnmatch.h>
+#include <unistd.h>
 #endif
 
 #ifndef LIBNC_CUDA_API
+#ifdef _WIN32
 #define LIBNC_CUDA_API __declspec(dllexport)
+#else
+#define LIBNC_CUDA_API
+#endif
+#endif
+
+#ifndef WINAPI
+#define WINAPI
+#endif
+
+#ifndef _WIN32
+typedef void *HMODULE;
+#define FreeLibrary dlclose
 #endif
 
 typedef int CUresult;
@@ -147,6 +161,7 @@ static char *cuda_strdup(const char *s)
     return p;
 }
 
+#ifdef _WIN32
 static void path_join(char *dst, size_t dst_size, const char *dir, const char *leaf)
 {
     size_t len = 0;
@@ -289,12 +304,171 @@ static void *load_sym(HMODULE mod, const char *name)
     }
     return p;
 }
+#else
+static int cuda_path_has_sep(const char *path)
+{
+    return strchr(path, '/') != NULL || strchr(path, '\\') != NULL;
+}
+
+static void path_join(char *dst, size_t dst_size, const char *dir, const char *leaf)
+{
+    size_t len = 0;
+    if (dir && *dir) {
+        len = strlen(dir);
+        if (len >= dst_size)
+            len = dst_size - 1;
+        memcpy(dst, dir, len);
+        if (len > 0 && dst[len - 1] != '/' && dst[len - 1] != '\\' && len + 1 < dst_size)
+            dst[len++] = '/';
+    }
+    if (leaf && *leaf) {
+        size_t leaf_len = strlen(leaf);
+        if (len + leaf_len >= dst_size)
+            leaf_len = dst_size - len - 1;
+        memcpy(dst + len, leaf, leaf_len);
+        len += leaf_len;
+    }
+    dst[len] = '\0';
+}
+
+static void copy_dirname(char *dst, size_t dst_size, const char *path)
+{
+    size_t len = strlen(path);
+    while (len > 0 && (path[len - 1] == '/' || path[len - 1] == '\\'))
+        len--;
+    if (len >= dst_size)
+        len = dst_size - 1;
+    memcpy(dst, path, len);
+    dst[len] = '\0';
+}
+
+static int file_exists(const char *path)
+{
+    return access(path, R_OK) == 0;
+}
+
+static HMODULE load_first_dll_matching_dir(const char *dir, const char *pattern)
+{
+    DIR *dp;
+    struct dirent *de;
+    char path[1024];
+
+    if (!dir || !*dir)
+        return NULL;
+
+    dp = opendir(dir);
+    if (!dp)
+        return NULL;
+
+    while ((de = readdir(dp)) != NULL) {
+        if (de->d_name[0] == '.')
+            continue;
+        if (fnmatch(pattern, de->d_name, 0) != 0)
+            continue;
+        path_join(path, sizeof(path), dir, de->d_name);
+        if (!file_exists(path))
+            continue;
+        HMODULE mod = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+        if (mod) {
+            closedir(dp);
+            return mod;
+        }
+    }
+
+    closedir(dp);
+    return NULL;
+}
+
+static HMODULE load_dll_from_search_paths(const char *patterns[])
+{
+    const char *envs[] = { "LD_LIBRARY_PATH", "PATH", "CUDA_HOME", "CUDA_PATH", NULL };
+    char pathbuf[4096];
+
+    for (size_t i = 0; patterns[i]; i++) {
+        HMODULE mod = dlopen(patterns[i], RTLD_NOW | RTLD_LOCAL);
+        if (mod)
+            return mod;
+    }
+
+    for (size_t i = 0; patterns[i]; i++) {
+        HMODULE mod = load_first_dll_matching_dir(".", patterns[i]);
+        if (mod)
+            return mod;
+    }
+
+    for (size_t ei = 0; envs[ei]; ei++) {
+        const char *value = getenv(envs[ei]);
+        if (!value || !*value)
+            continue;
+        size_t len = strlen(value) + 1;
+        char *tmp = (char *)malloc(len);
+        if (!tmp)
+            continue;
+        memcpy(tmp, value, len);
+        char *cursor = tmp;
+        while (cursor && *cursor) {
+            char *next = cursor;
+            while (*next && *next != ':')
+                next++;
+            char saved = *next;
+            *next = '\0';
+            if (*cursor) {
+                for (size_t i = 0; patterns[i]; i++) {
+                    HMODULE mod = load_first_dll_matching_dir(cursor, patterns[i]);
+                    if (mod) {
+                        free(tmp);
+                        return mod;
+                    }
+                }
+                if (strcmp(envs[ei], "CUDA_HOME") == 0 || strcmp(envs[ei], "CUDA_PATH") == 0) {
+                    path_join(pathbuf, sizeof(pathbuf), cursor, "lib64");
+                    for (size_t i = 0; patterns[i]; i++) {
+                        HMODULE mod = load_first_dll_matching_dir(pathbuf, patterns[i]);
+                        if (mod) {
+                            free(tmp);
+                            return mod;
+                        }
+                    }
+                    path_join(pathbuf, sizeof(pathbuf), cursor, "lib");
+                    for (size_t i = 0; patterns[i]; i++) {
+                        HMODULE mod = load_first_dll_matching_dir(pathbuf, patterns[i]);
+                        if (mod) {
+                            free(tmp);
+                            return mod;
+                        }
+                    }
+                }
+            }
+            *next = saved;
+            cursor = *next ? next + 1 : next;
+        }
+        free(tmp);
+    }
+
+    return NULL;
+}
+
+static void *load_sym(HMODULE mod, const char *name)
+{
+    void *p = dlsym(mod, name);
+    if (!p) {
+        fprintf(stderr, "libnc_cuda: missing symbol %s\n", name);
+    }
+    return p;
+}
+#endif
 
 static int cuda_load_fns(NCCudaFns *f)
 {
+#ifdef _WIN32
     const char *nvcuda_patterns[] = { "nvcuda.dll", NULL };
     const char *cublas_patterns[] = { "cublas64_*.dll", "cublas.dll", NULL };
     const char *nvrtc_patterns[] = { "nvrtc64_*.dll", "nvrtc.dll", NULL };
+#else
+    const char *nvcuda_patterns[] = { "libcuda.so", "libcuda.so.*", NULL };
+    const char *cublas_patterns[] = { "libcublas.so", "libcublas.so.*", NULL };
+    const char *nvrtc_patterns[] = { "libnvrtc.so", "libnvrtc.so.*", NULL };
+#endif
 
     memset(f, 0, sizeof(*f));
     f->nvcuda = load_dll_from_search_paths(nvcuda_patterns);

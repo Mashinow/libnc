@@ -50,7 +50,7 @@ Note: these helpers do not need a duplicate implementation in `src/` because the
 - [x] `nc_context_end`
 - [x] `nc_new_cpu_device`
 - [x] `nc_new_device` for `cpu`
-- [~] `nc_new_cuda_device` - searches executable dir, `PATH`, CUDA env vars, and portable overrides (`LIBNC_CUDA_DLL`, `LIBNC_CUDA_DIR`, `LIBNC_CUDA_HOME`) for the real `libnc_cuda.dll`/`libnc_cuda.so` backend built from `src/libnc_cuda_backend.c`, then falls back to the compatibility device
+- [~] `nc_new_cuda_device` - searches executable dir, `PATH`, CUDA env vars, and portable overrides (`LIBNC_CUDA_DLL`, `LIBNC_CUDA_DIR`, `LIBNC_CUDA_HOME`) for the real `libnc_cuda.dll`/`libnc_cuda.so` backend built from `src/libnc_cuda_backend.c` on Windows or `src/libnc_cuda_backend_linux.c` on Linux, then falls back to the compatibility device
 - [~] `nc_new_device` for `cuda[:index]` - routes through the CUDA loader hook and the real CUDA backend DLL, then falls back to the compatibility device path
 - [x] `nc_synchronize`
 - [x] `nc_new_tensor_buffer`
@@ -222,7 +222,7 @@ Note: these helpers do not need a duplicate implementation in `src/` because the
 - [~] `nc_concat_node` - correct for current tests, but still simplified wiring.
 - [~] `nc_concat_optimization` - simplified concat optimization pass.
 - [~] `nc_new_cuda_device` - CUDA support is optional, but the repo now includes a real backend DLL source and the loader still falls back cleanly when it is missing.
-- [~] `nc_cuda` backend - the GPU backend is now implemented in `src/libnc_cuda_backend.c`, but it remains optional and only covers the hot tensor ops that the current tests and benchmarks need.
+- [~] `nc_cuda` backend - the GPU backend is now implemented in `src/libnc_cuda_backend.c` with a Linux entry point in `src/libnc_cuda_backend_linux.c`, but it remains optional and only covers the hot tensor ops that the current tests and benchmarks need.
 
 ## Verification
 
